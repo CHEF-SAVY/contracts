@@ -121,7 +121,13 @@ Registers a new alert configuration for a target contract address.
 
 **Requires auth:** `owner`
 
-**Validation:** Rule descriptors are checked against the known prefixes `rule:transfer` and `rule:mint`, and the contract panics if any rule is not recognized.
+**Validation:** Rule descriptors are checked against the known prefixes `rule:transfer` and `rule:mint`. The call returns a `ContractError` instead of registering the alert if validation fails:
+
+| Error | Code | Cause |
+|---|---|---|
+| `TooManyRules` | 8 | More than 50 rules were supplied |
+| `InvalidRuleDescriptor` | 9 | A rule is not `rule:transfer` or `rule:mint` |
+| `DuplicateRule` | 15 | The same rule descriptor appears more than once |
 
 **Parameters**
 
