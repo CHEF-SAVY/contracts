@@ -15,12 +15,15 @@ Generated from the `DataKey` enum and every `symbol_short!` key the contract rea
 | Key | Tier | Value Type | Description |
 |---|---|---|---|
 | `DataKey::Alert(id: u64)` | Persistent | `AlertConfig` | A single alert configuration, keyed by its numeric ID |
+| `DataKey::RemovedAlert(id: u64)` | Persistent | `AlertConfig` | Removal tombstone: the last config of a removed alert, with `active == false`, so incremental sync can deliver it. Written once with `DEFAULT_TTL` and not extended afterwards (see [docs/ttl.md](ttl.md#other-persistent-entries)) |
 | `DataKey::AlertActive(id: u64)` | Persistent | `bool` | The `active` flag stored separately so it can be read without deserializing the full `AlertConfig` (see `get_alert_active`) |
 | `DataKey::OwnerIndex(addr: Address)` | Persistent | `Vec<u64>` | List of alert IDs owned by a given address |
 | `DataKey::OwnerLiveCount(addr: Address)` | Persistent | `u32` | Running count of currently live (non-removed) alerts owned by `addr`, deactivated alerts included. Renamed from `OwnerActiveCount` (the name wrongly implied an `active` filter); entries under the legacy key are migrated to the new key on first read. Maintained incrementally alongside `OwnerIndex` so `get_non_removed_alert_count` is O(1) instead of rescanning the index. `get_active_alert_count` instead scans `OwnerIndex` and filters by the `AlertActive` flag, so deactivated-but-not-removed alerts are excluded |
 | `DataKey::PendingTransfer(id: u64)` | Persistent | `PendingAlertTransfer` | Ownership transfer proposed by `propose_alert_transfer` and awaiting `accept_alert_transfer`: the recipient (`new_owner`) and the last ledger it can be accepted on (`expires_at_ledger`). Removed on accept, reject, cancel, alert removal, or retarget. Written with a TTL of `ALERT_TRANSFER_EXPIRY_LEDGERS` |
 | `DataKey::AdminSuspended(id: u64)` | Persistent | `bool` | Present while an admin has suspended the alert with `deactivate_alert_by_admin`; blocks owner reactivation until `unlock_alert_by_admin`. Extended with the alert's other entries by `touch_alert`; removed with the alert |
 | `DataKey::ContractIndex(addr: Address)` | Persistent | `Vec<u64>` | List of alert IDs watching a given contract address |
+| `DataKey::ContractLiveCount(addr: Address)` | Persistent | `u32` | Running count of live (non-removed) alerts targeting `addr`, maintained alongside `ContractIndex`. Rebuilt from `ContractIndex` if the entry is missing or expired |
+| `DataKey::DeactivationCursor(addr: Address)` | Persistent | `u32` | Next owner-index position to inspect for a resumable `deactivate_all_alerts` sweep. Present only while a sweep is unfinished; removed on completion or when the owner's index changes |
 | `instance_key::NEXT_ID` (`symbol_short!("NEXT_ID")`) | Instance | `u64` | Monotonic counter used to generate unique alert IDs; also the value returned by `get_alert_count` |
 | `instance_key::ADMIN` (`symbol_short!("ADMIN")`) | Instance | `Address` | Admin address that may pause the contract, remove alerts and set limits |
 | `instance_key::PAUSED` (`symbol_short!("PAUSED")`) | Instance | `bool` | Circuit-breaker flag set by `pause` / `unpause`; absent means not paused |
@@ -99,6 +102,6 @@ There are no persistent storage entries in WatcherRegistry.
 
 | Contract | Tier | Keys | TTL Managed By |
 |---|---|---|---|
-| AlertRegistry | Persistent | `Alert`, `AlertActive`, `OwnerIndex`, `OwnerLiveCount`, `ContractIndex` | Contract (`extend_ttl` to `DEFAULT_TTL` = 17,280 ledgers on write; `bump_alert` up to `MAX_TTL`) |
+| AlertRegistry | Persistent | `Alert`, `RemovedAlert`, `AlertActive`, `AdminSuspended`, `OwnerIndex`, `OwnerLiveCount`, `ContractIndex`, `ContractLiveCount`, `DeactivationCursor`, `PendingTransfer` | Contract (`extend_ttl` to `DEFAULT_TTL` = 17,280 ledgers on write, except `PendingTransfer` at `ALERT_TRANSFER_EXPIRY_LEDGERS`; `bump_alert` up to `MAX_TTL`) |
 | AlertRegistry | Instance | `NEXT_ID`, `LIVE`, `ADMIN`, `PAUSED`, `LIMIT`, `CLIMIT`, `GLIMIT`, `WATCHREG` | Contract (extended on every instance write and by `bump_instance_ttl`, to 535,680 ledgers) |
 | WatcherRegistry | Instance | `Admins`, `Watchers`, `PendingAdminTransfer`, `TimelockDelay`, `PendingAction`, `Paused`, `W_CNT` | Contract (`bump_instance_ttl`, extends to 535,680 ledgers) |
