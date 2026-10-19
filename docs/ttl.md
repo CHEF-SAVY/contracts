@@ -43,10 +43,12 @@ It extends the instance TTL to `INSTANCE_BUMP_AMOUNT` (535 680 ledgers, ~31
 days) whenever it has dropped below `INSTANCE_BUMP_THRESHOLD` (17 280 ledgers,
 ~24 hours), and is the `WatcherRegistry` analogue of `AlertRegistry::bump_alert`.
 
-**Operators should schedule a keeper to call it well inside the ~31-day
-window** — a call every few days is cheap and leaves ample margin. Any other
-transaction against the contract in the meantime does *not* refresh the TTL on
-its own, so do not rely on incidental traffic.
+**Operators should schedule a keeper to call it every 12 hours.** The call only
+extends the entry once its remaining TTL is at or below the 24-hour threshold,
+so the cadence must be shorter than that window: a multi-day cadence can miss
+it and let the entry expire. Any other transaction against the contract in the
+meantime does *not* refresh the TTL on its own, so do not rely on incidental
+traffic. See [docs/keeper-guide.md](keeper-guide.md) for the full cadence table.
 
 ## Keeping the Alert Registry Instance Alive
 
@@ -74,9 +76,9 @@ permissionless keep-alive:
 alert_client.bump_instance_ttl();
 ```
 
-**Operators should have a keeper call it every few days**, alongside
-`WatcherRegistry::bump_instance_ttl`. Reads and alert updates do not touch the
-instance entry's TTL.
+**Operators should have a keeper call it every 12 hours**, alongside
+`WatcherRegistry::bump_instance_ttl`, for the same threshold reason. Reads and
+alert updates do not touch the instance entry's TTL.
 
 ## Configurable TTL via `bump_alert`
 
