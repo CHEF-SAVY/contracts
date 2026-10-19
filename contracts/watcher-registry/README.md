@@ -77,7 +77,7 @@ stellar contract invoke \
 ## TypeScript bindings
 
 ```bash
-npm install @tx-wat/watcher-registry @stellar/stellar-sdk
+npm install @tx-wats/watcher-registry-bindings @stellar/stellar-sdk
 ```
 
 > **Note:** the npm packages are published by CI on the first tagged release. Until then, generate the bindings locally with `make bindings` from the repository root.

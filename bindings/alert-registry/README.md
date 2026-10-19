@@ -1,11 +1,11 @@
-# @tx-wat/alert-registry-bindings
+# @tx-wats/alert-registry-bindings
 
 TypeScript bindings for the AlertRegistry Soroban smart contract.
 
 ## Installation
 
 ```bash
-npm install @tx-wat/alert-registry-bindings
+npm install @tx-wats/alert-registry-bindings
 ```
 
 > **Note:** the npm packages are published by CI on the first tagged release. Until then, generate the bindings locally with `make bindings-alert` from the repository root.
@@ -14,7 +14,7 @@ npm install @tx-wat/alert-registry-bindings
 
 ```typescript
 import { createHash } from 'node:crypto';
-import { Contract, networks } from '@tx-wat/alert-registry-bindings';
+import { Contract, networks } from '@tx-wats/alert-registry-bindings';
 import { SorobanRpc, Keypair } from '@stellar/stellar-sdk';
 
 const rpcUrl = 'https://soroban-testnet.stellar.org';

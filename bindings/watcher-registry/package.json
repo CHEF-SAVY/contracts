@@ -1,5 +1,5 @@
 {
-  "name": "@tx-wat/watcher-registry",
+  "name": "@tx-wats/watcher-registry-bindings",
   "version": "0.1.0",
   "description": "TypeScript bindings for the stellar-txwatch WatcherRegistry Soroban contract",
   "main": "dist/index.js",

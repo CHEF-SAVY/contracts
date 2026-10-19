@@ -12,7 +12,7 @@ repository.
 |---|---|---|---|---|
 | **Stellar Developer Tools Listing** (`stellar/stellar-docs`) | `Pending Submission` | — | — | Ready for PR submission to `stellar/stellar-docs` under Smart Contracts / Monitoring |
 | **Soroban Example Contracts** (`stellar/soroban-examples`) | `Pending Submission` | — | — | Ready for PR submission to `stellar/soroban-examples` once v0.1.0 release is tagged |
-| **npm Bindings Publishing** (`@tx-wat/watcher-registry`) | `Configured` | 2025-05-28 | [`.github/workflows/publish-bindings.yml`](../.github/workflows/publish-bindings.yml) | Automated CI publish on tagged release |
+| **npm Bindings Publishing** (`@tx-wats/watcher-registry-bindings`) | `Configured` | 2025-05-28 | [`.github/workflows/publish-bindings.yml`](../.github/workflows/publish-bindings.yml) | Automated CI publish on tagged release |
 
 > **Status Values:**
 > - `Pending Submission`: Ready to be submitted, awaiting submission PR creation.
@@ -45,7 +45,7 @@ ecosystem.
 | Property | Value |
 |---|---|
 | **Repository** | https://github.com/Tx-wat/stellar-txwatch-contracts |
-| **npm (TypeScript bindings)** | `@tx-wat/watcher-registry` |
+| **npm (TypeScript bindings)** | `@tx-wats/watcher-registry-bindings` |
 | **Network** | Testnet · Mainnet |
 | **Language** | Rust (Soroban SDK 22) |
 | **License** | MIT |
@@ -172,7 +172,7 @@ See [docs/<contract-name>.md](../../docs/<contract-name>.md).
 ## 3. npm Package — TypeScript Bindings
 
 TypeScript bindings for `WatcherRegistry` are published to npm as
-`@tx-wat/watcher-registry` via the
+`@tx-wats/watcher-registry-bindings` via the
 [publish-bindings workflow](../.github/workflows/publish-bindings.yml).
 
 ### Publishing steps (manual)
@@ -203,6 +203,6 @@ npm publish --access public
 
 | Secret | Description |
 |---|---|
-| `NPM_TOKEN` | npm automation token with publish rights to the `@tx-wat` scope |
+| `NPM_TOKEN` | npm automation token with publish rights to the `@tx-wats` scope |
 
 Set this in **GitHub → Settings → Secrets and variables → Actions**.

@@ -3,7 +3,7 @@ name: Publish TypeScript Bindings
 # Runs on every published GitHub release (e.g. v0.1.0).
 # Generates TypeScript bindings from the compiled WASM using
 # `stellar contract bindings typescript`, then publishes the
-# resulting package to npm under @tx-wat/watcher-registry.
+# resulting package to npm under @tx-wats/watcher-registry-bindings.
 on:
   release:
     types: [published]
@@ -157,7 +157,7 @@ jobs:
 
           // Our curated metadata
           const meta = {
-            name:        "@tx-wats/watcher-registry",
+            name:        "@tx-wats/watcher-registry-bindings",
             version:     process.env.RELEASE_TAG.replace(/^v/, ""),
             description: "TypeScript bindings for the stellar-txwatch WatcherRegistry Soroban contract",
             keywords:    ["stellar", "soroban", "smart-contract", "watcher-registry", "txwatch", "blockchain"],
@@ -223,9 +223,9 @@ jobs:
           cd "$workdir"
           npm init -y >/dev/null
 
-          echo "Waiting for @tx-wat/watcher-registry@${version} to appear on npm..."
+          echo "Waiting for @tx-wats/watcher-registry-bindings@${version} to appear on npm..."
           for attempt in $(seq 1 10); do
-            if npm install "@tx-wat/watcher-registry@${version}" "@stellar/stellar-sdk@^17"; then
+            if npm install "@tx-wats/watcher-registry-bindings@${version}" "@stellar/stellar-sdk@^17"; then
               installed=1
               break
             fi
@@ -238,7 +238,7 @@ jobs:
           fi
 
           cat > smoke.mjs <<'JS'
-          import { Client, networks } from "@tx-wat/watcher-registry";
+          import { Client, networks } from "@tx-wats/watcher-registry-bindings";
 
           const contractId = process.env.TESTNET_ID;
           if (networks.testnet.contractId !== contractId) {

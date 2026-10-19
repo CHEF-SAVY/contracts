@@ -16,7 +16,7 @@ This document defines the compatibility matrix between `stellar-txwatch-contract
 
 ## Compatibility Table
 
-| Contract Tag / Version | Soroban SDK / Protocol | npm Bindings (`@tx-wat/watcher-registry`) | Core Engine (`stellar-txwatch-core`) | Web Dashboard (`stellar-txwatch-web`) | Compatibility Status & Notes |
+| Contract Tag / Version | Soroban SDK / Protocol | npm Bindings (`@tx-wats/watcher-registry-bindings`) | Core Engine (`stellar-txwatch-core`) | Web Dashboard (`stellar-txwatch-web`) | Compatibility Status & Notes |
 |---|---|---|---|---|---|
 | **`v0.1.0`** | Soroban SDK 22.0.0 (Protocol 22) | `^0.1.0` | `^0.1.0` | `^0.1.0` | **Stable**. Initial release supporting basic alert and watcher registration, owner/contract index lookups, and TTL management. |
 | **`v0.2.0`** *(main / unreleased)* | Soroban SDK 22.0.0 (Protocol 22) | `^0.2.0` | `^0.2.0` | `^0.2.0` | **Active Development**. Adds `is_watcher_gating_enabled` convenience getter, on-chain `contractmeta!` discoverability, two-phase webhook rotation, and bulk deauthorization. |
@@ -63,7 +63,7 @@ When preparing a new release tag:
    - Update root `CHANGELOG.md` with monorepo and contract changes.
    - Update `bindings/alert-registry/CHANGELOG.md` with package-specific changes and bump `package.json` version.
    - Update `bindings/watcher-registry/CHANGELOG.md` with package-specific changes and bump `package.json` version.
-6. [ ] **Tag & Release:** Push the release tag (e.g. `v0.1.0`) to trigger GitHub Actions publishing for ABIs and npm bindings (`@tx-wat/alert-registry-bindings` and `@tx-wat/watcher-registry`).
+6. [ ] **Tag & Release:** Push the release tag (e.g. `v0.1.0`) to trigger GitHub Actions publishing for ABIs and npm bindings (`@tx-wats/alert-registry-bindings` and `@tx-wats/watcher-registry-bindings`).
 
 ---
 
@@ -88,8 +88,8 @@ When modifying contracts or releasing a new bindings version:
    ```
 
 2. **Update Package Changelogs**:
-   - For `bindings/alert-registry/CHANGELOG.md`: document any new/updated methods, types, or breaking interface changes for `@tx-wat/alert-registry-bindings`.
-   - For `bindings/watcher-registry/CHANGELOG.md`: document any changes for `@tx-wat/watcher-registry`.
+   - For `bindings/alert-registry/CHANGELOG.md`: document any new/updated methods, types, or breaking interface changes for `@tx-wats/alert-registry-bindings`.
+   - For `bindings/watcher-registry/CHANGELOG.md`: document any changes for `@tx-wats/watcher-registry-bindings`.
    - Move entries from `## [Unreleased]` to `## [<version>] - YYYY-MM-DD` and update comparison links at the bottom.
 
 3. **Verify Package Tests**:
