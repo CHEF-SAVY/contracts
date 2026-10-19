@@ -1,0 +1,15 @@
+# Spell-check configuration for crate-ci/typos (run by the `typos` job in .github/workflows/ci.yml).
+# Add project-specific identifiers and abbreviations to the allow-lists below
+# rather than rewording existing docs.
+
+[default.extend-identifiers]
+# Webhook-config abbreviation used in the alert-registry API and events
+wh_conf = "wh_conf"
+# Transfer shorthand used in comments and docs
+xfer = "xfer"
+# Contract limit constant (alert-registry)
+CLIMIT = "CLIMIT"
+
+[default.extend-words]
+# Transfer shorthand used in comments and docs
+xfer = "xfer"
