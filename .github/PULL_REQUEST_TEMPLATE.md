@@ -37,6 +37,7 @@
 - [ ] My code follows the repository style
 - [ ] I have added relevant tests (unit / integration)
 - [ ] I have updated or added documentation if necessary
+- [ ] I have **not** committed this PR's description, audit notes, or clippy/fix write-ups as files (put them here instead; see `CONTRIBUTING.md` → Documentation Guidelines)
 - [ ] All CI checks pass (`ci`, `msrv`, `Check WASM binary sizes`)
 
 ## Testing notes

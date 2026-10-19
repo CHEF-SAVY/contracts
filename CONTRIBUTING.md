@@ -50,6 +50,20 @@ Tests run natively (no WASM target needed). Each contract has a `#[cfg(test)]` m
 ./scripts/test.sh -- --nocapture              # Show output from passing tests
 ```
 
+See [docs/testing.md](docs/testing.md) for the test patterns, regression tests, fuzzing, and mutation testing.
+
+## Lints
+
+The workspace enables `clippy::pedantic` at `warn` level via `[workspace.lints.clippy]` in the root `Cargo.toml`. A few pedantic lints that Soroban's generated interface triggers on correct code are scoped off there, and the proptest modules carry their own `#![allow(...)]` for the same reason.
+
+CI runs clippy with warnings as errors, so check locally before pushing:
+
+```bash
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+Prefer fixing a warning over adding an `#[allow(...)]`. If an allow is genuinely needed, put it on the narrowest item and explain why in a comment.
+
 ## Deploy to Testnet
 
 1. Set up a funded testnet identity:
@@ -211,6 +225,7 @@ fn main() {
 
 - **`docs/` directory:** Reserved strictly for durable, evergreen reference material (e.g., architecture guides, storage layouts, event catalogs, protocol specifications, API references).
 - **PR summaries & changelog notes:** Do not commit temporary per-PR summaries or change descriptions directly into `docs/`. PR details belong in GitHub pull request descriptions, and notable changes should be added to `CHANGELOG.md`.
+- **No write-ups at the repo root:** Do not add clippy reports, audit write-ups, fix summaries, or similar files at the repository root or under `docs/`. They go stale as soon as the PR merges. Put that detail in the PR description, and move anything that stays true into `CONTRIBUTING.md`, `docs/testing.md`, or `CHANGELOG.md`.
 
 ## Cutting a Release
 
