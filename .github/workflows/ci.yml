@@ -274,3 +274,13 @@ jobs:
 
       - name: Dependency Review
         uses: actions/dependency-review-action@v5
+
+  # Issue #453 — Spell-check docs, rustdoc and error descriptions (allow-list in _typos.toml)
+  typos:
+    name: Spell check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check spelling
+        uses: crate-ci/typos@master
