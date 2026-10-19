@@ -2,13 +2,21 @@
   "name": "@tx-wat/alert-registry-bindings",
   "version": "0.2.0",
   "description": "TypeScript bindings for the AlertRegistry Soroban smart contract",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "require": "./lib/index.js",
+      "default": "./lib/index.js"
+    }
+  },
   "files": [
-    "dist"
+    "dist",
+    "lib"
   ],
   "scripts": {
-    "build": "CONTRACT_ID=$(python3 ../../scripts/deployment_address.py --network testnet --contract \"Alert Registry\") && stellar contract bindings typescript --wasm ../../target/wasm32-unknown-unknown/release/alert_registry.wasm --output-dir ./dist --contract-id \"$CONTRACT_ID\" --overwrite",
+    "build": "CONTRACT_ID=$(python3 ../../scripts/deployment_address.py --network testnet --contract \"Alert Registry\") && stellar contract bindings typescript --wasm ../../target/wasm32-unknown-unknown/release/alert_registry.wasm --output-dir ./dist --contract-id \"$CONTRACT_ID\" --overwrite && tsc -p tsconfig.json && tsc -p tsconfig.entry.json",
     "test": "vitest run",
     "prepublishOnly": "npm run build"
   },
