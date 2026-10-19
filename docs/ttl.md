@@ -6,8 +6,8 @@ Soroban persistent storage entries have a **Time-To-Live (TTL)** measured in **l
 
 ## Current TTL Configuration
 
-All persistent storage entries in `alert-registry` use a **default TTL of
-17 280 ledgers (~24 hours)**:
+`alert-registry` has **ten persistent keys**. Most are written with a **default
+TTL of 17 280 ledgers (~24 hours)**:
 
 ```rust
 // DEFAULT_TTL = 17_280  (~24 hours at 5 s/ledger)
@@ -17,12 +17,61 @@ env.storage().persistent().extend_ttl(&key, DEFAULT_TTL, DEFAULT_TTL);
 This applies to:
 - `DataKey::Alert(id)` — individual alert configs
 - `DataKey::AlertActive(id)` — per-alert active flag
+- `DataKey::AdminSuspended(id)` — present while an admin has suspended the alert
+- `DataKey::RemovedAlert(id)` — removal tombstone (see [Other Persistent Entries](#other-persistent-entries))
 - `DataKey::OwnerIndex(address)` — per-owner alert ID lists
+- `DataKey::OwnerLiveCount(address)` — per-owner live alert count
 - `DataKey::ContractIndex(address)` — per-contract alert ID lists
+- `DataKey::ContractLiveCount(address)` — per-contract live alert count
+- `DataKey::DeactivationCursor(address)` — resume point for a bulk deactivation
+
+The exception is `DataKey::PendingTransfer(id)`, which uses
+`ALERT_TRANSFER_EXPIRY_LEDGERS` (see [Non-Default TTLs](#non-default-ttls)).
+For each key's tier and value type, see [docs/storage.md](storage.md).
 
 The `watcher-registry` uses **instance storage**, which has its own TTL managed
 by the network. No registry entrypoint extends it as a side effect, so see
 [Keeping the watcher registry alive](#keeping-the-watcher-registry-alive) below.
+
+## Non-Default TTLs
+
+Only these paths write a TTL other than `DEFAULT_TTL`:
+
+| Entry | TTL (ledgers) | Wall-clock | Set by |
+|-------|---------------|------------|--------|
+| `PendingTransfer(id)` | `ALERT_TRANSFER_EXPIRY_LEDGERS` = 120 960 | ~7 days | `propose_alert_transfer` |
+| `Alert`, `AlertActive`, `OwnerIndex`, `ContractIndex` (and the other alert-dependent entries) | Requested, capped at `MAX_TTL` = 535 680 | up to ~31 days | `bump_alert` |
+| Instance entry (both registries) | `INSTANCE_BUMP_AMOUNT` = 535 680 | ~31 days | `bump_instance_ttl` |
+
+`PendingTransfer` is written only by `propose_alert_transfer` and is not
+refreshed by any other mutator, so a proposed transfer lapses after its own
+~7-day window regardless of later activity on the alert.
+
+### Other Persistent Entries
+
+**Removal tombstones.** `remove_alert`, `remove_alert_by_admin` and
+`batch_remove_alert` replace `Alert(id)` with a `RemovedAlert(id)` tombstone
+(`active == false`) so incremental sync can report the removal. The tombstone
+is written with `DEFAULT_TTL` and nothing extends it afterwards: `touch_alert`
+does not cover it and `bump_alert` cannot reach it. It is archived about 24
+hours after removal (see #360).
+
+**Bulk deactivation cursor.** `deactivate_all_alerts` stores
+`DeactivationCursor(owner)` with `DEFAULT_TTL` only when a call stops at
+`MAX_DEACTIVATIONS_PER_CALL` before the end of the owner's index. The cursor is
+removed when the sweep finishes or the owner's index changes. If it expires,
+the next call restarts from the beginning, which is harmless because alerts
+already deactivated are skipped.
+
+**Live counters.** `ContractLiveCount` and `OwnerLiveCount` are written with
+`DEFAULT_TTL` and extended by `touch_alert` whenever they are present.
+If `ContractLiveCount` expires, `contract_live_count` rebuilds it from
+`ContractIndex` on the next read. `OwnerLiveCount` has no such rebuild: if it
+expires, `owner_live_count` reads it as `0` until the next write.
+
+**Admin suspension.** `AdminSuspended(id)` is written with the alert and
+extended by `touch_alert` whenever it is present, so it follows the alert's
+TTL.
 
 ## Keeping the Watcher Registry Alive
 
@@ -120,7 +169,8 @@ the alert's content.
 
 Every mutating call refreshes the **whole set** of entries an alert depends on
 through a single internal helper, `touch_alert`:
-`Alert(id)`, `AlertActive(id)`, `OwnerIndex(owner)`, `OwnerLiveCount(owner)`, `ContractIndex(target)`.
+`Alert(id)`, `AlertActive(id)`, `OwnerIndex(owner)`, `OwnerLiveCount(owner)`, `ContractIndex(target)`,
+plus `ContractLiveCount(target)` and `AdminSuspended(id)` when they are present.
 Mutators that rewrite the alert call `persist_alert`, which writes the config
 and its `AlertActive` flag and then calls `touch_alert` with `DEFAULT_TTL`, so
 no mutator can extend one entry and forget another. (`OwnerLiveCount` is only
@@ -139,11 +189,12 @@ extended when present; see `docs/storage.md`.)
 | `accept_alert_transfer` | Full set with the **new** owner's `OwnerIndex`/`OwnerLiveCount`, to `DEFAULT_TTL` |
 | `propose_alert_transfer` | `PendingTransfer(id)` only, to `ALERT_TRANSFER_EXPIRY_LEDGERS` |
 | `update_target_contract` | Full set with the **new** target's `ContractIndex`, to `DEFAULT_TTL`; the old target's index is rewritten and extended |
-| `deactivate_all_alerts` | Full set for each deactivated alert, to `DEFAULT_TTL` |
+| `deactivate_all_alerts` | Full set for each deactivated alert, to `DEFAULT_TTL`; `DeactivationCursor(owner)` to `DEFAULT_TTL` while a sweep is unfinished |
 | `renew_alert_ttl`     | Full set, to `DEFAULT_TTL` — data unchanged |
 | `bump_alert`          | Full set, to the requested TTL (capped at `MAX_TTL`) — data unchanged |
-| `remove_alert`        | Entry is deleted (no TTL needed); owner/contract indexes and `OwnerLiveCount` are rewritten and extended |
+| `remove_alert`        | `Alert(id)` and `AlertActive(id)` are deleted; `RemovedAlert(id)` tombstone written to `DEFAULT_TTL` and not extended again; owner/contract indexes and both live counts are rewritten and extended |
 | `remove_alert_by_admin` | Same as `remove_alert` |
+| `batch_remove_alert`  | Same as `remove_alert`, for each ID |
 
 Read-only functions (`get_alert`, `get_alerts_for_contract`, `get_alerts_by_owner`) do **not** extend the TTL.
 
@@ -171,6 +222,10 @@ so the constant is the single place to change:
 // Example: extend to ~7 days
 pub const DEFAULT_TTL: u32 = 120_960;
 ```
+
+`ALERT_TRANSFER_EXPIRY_LEDGERS` and the `INSTANCE_BUMP_*` constants are separate
+and do not follow `DEFAULT_TTL`. The `RemovedAlert` tombstone also uses
+`DEFAULT_TTL`, so raising it extends how long removals stay visible to sync.
 
 ## Further Reading
 
