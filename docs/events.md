@@ -89,6 +89,22 @@ Emitted when a staged webhook hash is promoted to the live one via
 
 ---
 
+### `alert.wh_cancel`
+
+Emitted when a staged webhook rotation is withdrawn via
+`cancel_webhook_proposal`, without being confirmed. The live `webhook_hash` is
+unchanged.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("alert")` |
+| Topic 1 | `Symbol("wh_cancel")` |
+| Data | `(id: u64, caller: Address)` |
+
+**Status:** ✅ implemented (`cancel_webhook_proposal`)
+
+---
+
 ### `alert.remove`
 
 Emitted when an alert is removed by its owner or by an admin.
@@ -163,6 +179,22 @@ Emitted when an admin lifts a suspension with `unlock_alert_by_admin`, allowing 
 
 ---
 
+### `alert.admin_off`
+
+Emitted when an admin suspends an alert with `deactivate_alert_by_admin`. The
+alert is deactivated and marked as admin-suspended, so the owner cannot
+reactivate it until an admin lifts the suspension.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("alert")` |
+| Topic 1 | `Symbol("admin_off")` |
+| Data | `(id: u64, admin: Address)` |
+
+**Status:** ✅ implemented (`deactivate_alert_by_admin`)
+
+---
+
 ### `alert.pruned`
 
 Emitted when dangling IDs of expired alerts are removed from an owner's index, by `prune_expired_alerts` or by `register_alert` when the owner is at the per-owner limit.
@@ -205,11 +237,31 @@ Emitted when the recipient accepts a transfer and becomes the alert's owner.
 
 ---
 
-### `alert.xfer_rej` / `alert.xfer_can`
+### `alert.xfer_rej`
 
-Emitted when a pending transfer is rejected by the recipient (`xfer_rej`, data `(id: u64, new_owner: Address)`) or cancelled by the owner (`xfer_can`, data `(id: u64, owner: Address)`).
+Emitted when a pending transfer is rejected by the recipient. Ownership is unchanged.
 
-**Status:** ✅ implemented (`reject_alert_transfer`, `cancel_alert_transfer`)
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("alert")` |
+| Topic 1 | `Symbol("xfer_rej")` |
+| Data | `(id: u64, new_owner: Address)` |
+
+**Status:** ✅ implemented (`reject_alert_transfer`)
+
+---
+
+### `alert.xfer_can`
+
+Emitted when the owner cancels a pending transfer. Ownership is unchanged.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("alert")` |
+| Topic 1 | `Symbol("xfer_can")` |
+| Data | `(id: u64, owner: Address)` |
+
+**Status:** ✅ implemented (`cancel_alert_transfer`)
 
 ---
 
@@ -318,6 +370,66 @@ Emitted after the registry WASM is replaced.
 | Data | `(admin: Address, new_wasm_hash: BytesN<32>)` |
 
 **Status:** ✅ implemented (`upgrade`)
+
+---
+
+### `admin.propose`
+
+Emitted when an admin proposes transferring the admin role via
+`propose_admin_transfer`. The transfer takes effect only once the proposed
+address calls `accept_admin_transfer`.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("admin")` |
+| Topic 1 | `Symbol("propose")` |
+| Data | `(admin: Address, new_admin: Address)` |
+
+**Status:** ✅ implemented (`propose_admin_transfer`)
+
+---
+
+### `admin.cancel`
+
+Emitted when a pending admin transfer is withdrawn via `cancel_admin_transfer`.
+The current admin is unchanged.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("admin")` |
+| Topic 1 | `Symbol("cancel")` |
+| Data | `(admin: Address)` |
+
+**Status:** ✅ implemented (`cancel_admin_transfer`)
+
+---
+
+### `admin.pause`
+
+Emitted when an admin pauses the registry with `pause`. Mutating calls are
+rejected until `admin.unpause` is emitted.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("admin")` |
+| Topic 1 | `Symbol("pause")` |
+| Data | `(admin: Address)` |
+
+**Status:** ✅ implemented (`pause`)
+
+---
+
+### `admin.unpause`
+
+Emitted when an admin resumes normal operation with `unpause`.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("admin")` |
+| Topic 1 | `Symbol("unpause")` |
+| Data | `(admin: Address)` |
+
+**Status:** ✅ implemented (`unpause`)
 
 ---
 
@@ -556,6 +668,35 @@ emitted alongside it.
 | Data | `(caller: Address)` |
 
 **Status:** ✅ implemented (`execute_admin_action`)
+
+---
+
+### `admin.pause`
+
+Emitted when an admin pauses the registry with `pause`. Mutating calls are
+rejected until `admin.unpause` is emitted.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("admin")` |
+| Topic 1 | `Symbol("pause")` |
+| Data | `(caller: Address)` |
+
+**Status:** ✅ implemented (`pause`)
+
+---
+
+### `admin.unpause`
+
+Emitted when an admin resumes normal operation with `unpause`.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("admin")` |
+| Topic 1 | `Symbol("unpause")` |
+| Data | `(caller: Address)` |
+
+**Status:** ✅ implemented (`unpause`)
 
 ---
 
