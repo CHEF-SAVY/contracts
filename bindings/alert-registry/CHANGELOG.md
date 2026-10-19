@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Hand-maintained `src/index.ts` entry point with a `networks` map and an `exports` map, matching `@tx-wat/watcher-registry`. The package now resolves to `lib/index.js`; the generated client stays in `dist/`. The testnet contract ID comes from the generated bindings, which are built from the address in `DEPLOYMENTS.md`.
 - `unlockAlertByAdmin({ admin, config_id })` and `isAlertSuspended({ config_id })`; `updateAlert` can now fail with `AlertSuspended`. (#202)
 - `pruneExpiredAlerts({ owner })` — permissionless clean-up of expired alerts still counted against an owner's quota. (#209)
 
