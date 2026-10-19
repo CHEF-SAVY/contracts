@@ -56,7 +56,7 @@ def parse_doc_events(doc_path: str) -> dict:
 
     doc_data = {"AlertRegistry": {}, "WatcherRegistry": {}}
     current_contract = None
-    current_event = None
+    current_events = []
 
     for line in lines:
         line_str = line.strip()
@@ -68,20 +68,21 @@ def parse_doc_events(doc_path: str) -> dict:
                 current_contract = "WatcherRegistry"
             else:
                 current_contract = None
-            current_event = None
+            current_events = []
 
         elif line_str.startswith("### ") and current_contract:
-            # e.g., "### `alert.register`" or "### alert.register"
-            event_name = line_str.replace("### ", "").replace("`", "").strip()
-            if "." in event_name:
-                current_event = event_name
-                doc_data[current_contract][current_event] = {"status": "unknown"}
+            # e.g., "### `alert.register`", "### alert.register" or "### `alert.xfer_rej` / `alert.xfer_can`"
+            heading = line_str.replace("### ", "").replace("`", "").strip()
+            current_events = [name.strip() for name in heading.split("/") if "." in name]
+            for event_name in current_events:
+                doc_data[current_contract][event_name] = {"status": "unknown"}
 
-        elif current_contract and current_event and line_str.startswith("**Status:**"):
-            if "✅" in line_str or "implemented" in line_str.lower():
-                doc_data[current_contract][current_event]["status"] = "implemented"
-            elif "🔲" in line_str or "planned" in line_str.lower():
-                doc_data[current_contract][current_event]["status"] = "planned"
+        elif current_contract and current_events and line_str.startswith("**Status:**"):
+            for event_name in current_events:
+                if "✅" in line_str or "implemented" in line_str.lower():
+                    doc_data[current_contract][event_name]["status"] = "implemented"
+                elif "🔲" in line_str or "planned" in line_str.lower():
+                    doc_data[current_contract][event_name]["status"] = "planned"
 
     return doc_data
 
