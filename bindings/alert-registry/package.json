@@ -1,5 +1,5 @@
 {
-  "name": "@tx-wat/alert-registry-bindings",
+  "name": "@tx-wats/alert-registry-bindings",
   "version": "0.2.0",
   "description": "TypeScript bindings for the AlertRegistry Soroban smart contract",
   "main": "dist/index.js",

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — npm package names
+
+- **TypeScript bindings renamed to `@tx-wats/<contract>-bindings`.** The scope now matches the GitHub org (`Tx-wats`) and both packages share the `-bindings` suffix: `@tx-wat/alert-registry-bindings` → `@tx-wats/alert-registry-bindings`, and `@tx-wat/watcher-registry` → `@tx-wats/watcher-registry-bindings`. Nothing was published under the old names.
+
 ### Changed — BREAKING (alert-registry)
 
 - **Alert ownership transfers now require the recipient's acceptance.**
