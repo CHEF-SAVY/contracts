@@ -1,0 +1,15 @@
+# Link checker configuration for lychee (see .github/workflows/link-check.yml).
+# Checks Markdown files for broken relative paths and #anchors.
+
+# Verify #fragments against headings in local Markdown files.
+include_fragments = true
+
+# Skip build output and VCS metadata.
+exclude_path = [".git", "target", "node_modules"]
+
+# Skip template placeholders such as `docs/<contract-name>.md` and the
+# `compare/vPREV...vX.Y.Z` example in CONTRIBUTING.md.
+exclude = ['<[^>]+>', 'vPREV']
+
+# Retry transient failures so flaky hosts do not fail the weekly run.
+max_retries = 3

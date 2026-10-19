@@ -1,0 +1,47 @@
+name: Link Check
+
+# Internal links and #anchors are checked on every PR and push to main.
+# External links are checked weekly (and on demand) so that third-party
+# outages do not block unrelated changes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 06:00 UTC, matching the Dependabot schedule
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+# Issue #452 — Top-level least-privilege permissions
+permissions:
+  contents: read
+
+jobs:
+  internal-links:
+    name: Check internal links and anchors
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check internal links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --config .lychee.toml --offline .
+          fail: true
+
+  external-links:
+    name: Check external links
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check all links
+        uses: lycheeverse/lychee-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --config .lychee.toml .
+          fail: true
