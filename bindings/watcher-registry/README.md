@@ -79,7 +79,7 @@ class. The method signatures mirror the Soroban contract interface exactly.
 | Network | Contract ID |
 |---|---|
 | Testnet | `networks.testnet.contractId` — see [DEPLOYMENTS.md](https://github.com/Tx-wat/stellar-txwatch-contracts/blob/main/DEPLOYMENTS.md) |
-| Mainnet | Not yet deployed (`networks.mainnet.contractId` is `""`) — tracked in [#90](https://github.com/Tx-wat/stellar-txwatch-contracts/issues/90) |
+| Mainnet | Not yet deployed (`networks.mainnet.contractId` is `""`) — see [DEPLOYMENTS.md](../../DEPLOYMENTS.md) |
 
 ## Generating bindings locally
 
