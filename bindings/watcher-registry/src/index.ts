@@ -34,7 +34,7 @@ export * from "./watcher_registry.js";
 //
 // `mainnet.contractId` is intentionally empty: the WatcherRegistry is not yet
 // deployed on mainnet. It stays empty until the mainnet deployment lands
-// (tracked in issue #90), at which point CI fills it from DEPLOYMENTS.md.
+// (see DEPLOYMENTS.md), at which point CI fills it from that file.
 
 export interface NetworkConfig {
   /** Deployed contract ID (56-character Stellar address starting with C). */
@@ -54,7 +54,7 @@ export const networks = {
     rpcUrl: "https://soroban-testnet.stellar.org",
   },
   mainnet: {
-    // Not yet deployed on mainnet — see issue #90. CI overlays the real
+    // Not yet deployed on mainnet — see DEPLOYMENTS.md. CI overlays the real
     // address here once DEPLOYMENTS.md lists it.
     contractId: "",
     networkPassphrase: "Public Global Stellar Network ; September 2015",
