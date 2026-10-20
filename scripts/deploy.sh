@@ -119,7 +119,11 @@ ALERT_ADMIN=$(stellar contract invoke \
   --network "$NETWORK" \
   --rpc-url "$RPC_URL" \
   --network-passphrase "$NETWORK_PASSPHRASE" \
-  -- get_admin 2>/dev/null || echo "$ADMIN_ADDRESS")
+  -- get_admin)
+if [[ "$ALERT_ADMIN" != *"$ADMIN_ADDRESS"* ]]; then
+  echo "Error: Alert Registry admin verification failed (expected $ADMIN_ADDRESS, got $ALERT_ADMIN)" >&2
+  exit 1
+fi
 echo "    Configured Admin:     $ALERT_ADMIN"
 
 ALERT_WATCHREG=$(stellar contract invoke \
@@ -128,7 +132,11 @@ ALERT_WATCHREG=$(stellar contract invoke \
   --network "$NETWORK" \
   --rpc-url "$RPC_URL" \
   --network-passphrase "$NETWORK_PASSPHRASE" \
-  -- get_watcher_registry 2>/dev/null || echo "None")
+  -- get_watcher_registry)
+if [[ "$ALERT_WATCHREG" != *"$WATCHER_ID"* ]]; then
+  echo "Error: Alert Registry watcher verification failed (expected $WATCHER_ID, got $ALERT_WATCHREG)" >&2
+  exit 1
+fi
 echo "    Gated WatcherRegistry: $ALERT_WATCHREG"
 
 echo ""
