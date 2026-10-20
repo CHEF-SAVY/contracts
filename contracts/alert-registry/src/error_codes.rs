@@ -39,5 +39,6 @@ mod tests {
         assert_eq!(ContractError::AlertSuspended as u32, 21);
         assert_eq!(ContractError::EmptyLabel as u32, 22);
         assert_eq!(ContractError::NoopWebhookRotation as u32, 23);
+        assert_eq!(ContractError::EmptyRules as u32, 25);
     }
 }

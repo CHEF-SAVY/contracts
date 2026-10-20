@@ -1638,3 +1638,113 @@ fn test_regression_instance_keys_match_legacy_symbols() {
     assert_eq!(client.get_per_owner_alert_limit(), 3);
     assert!(client.is_paused());
 }
+
+/// Regression test for #378: `set_alert_active` to the current state is a
+/// no-op: no storage rewrite (`updated_ledger` unchanged) and no event.
+#[test]
+fn test_regression_set_alert_active_is_noop_when_state_unchanged() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let id = register(&env, &client, &owner, "A");
+    let before = client.get_alert(&owner, &id).unwrap();
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 10;
+        li.timestamp += 100;
+    });
+    client.set_alert_active(&owner, &id, &true);
+
+    let after = client.get_alert(&owner, &id).unwrap();
+    assert_eq!(after.updated_at, before.updated_at);
+    assert_eq!(after.updated_ledger, before.updated_ledger);
+    assert!(
+        env.events().all().is_empty(),
+        "a no-op transition must not emit alert.update"
+    );
+
+    // A real transition still updates and emits.
+    client.set_alert_active(&owner, &id, &false);
+    let toggled = client.get_alert(&owner, &id).unwrap();
+    assert!(!toggled.active);
+    assert!(toggled.updated_ledger > before.updated_ledger);
+}
+
+/// Regression test for #377: the all-zero webhook hash is rejected by
+/// `register_alert`, `update_webhook` and `propose_webhook`.
+#[test]
+fn test_regression_all_zero_webhook_hash_is_rejected() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let zero = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+
+    assert_eq!(
+        client
+            .try_register_alert(
+                &owner,
+                &Address::generate(&env),
+                &str(&env, "A"),
+                &zero,
+                &vec![&env, str(&env, "rule:transfer")],
+            )
+            .unwrap_err()
+            .unwrap(),
+        ContractError::InvalidWebhookHash
+    );
+
+    let id = register(&env, &client, &owner, "A");
+    assert_eq!(
+        client
+            .try_update_webhook(&owner, &id, &zero)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::InvalidWebhookHash
+    );
+    assert_eq!(
+        client
+            .try_propose_webhook(&owner, &id, &zero)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::InvalidWebhookHash
+    );
+}
+
+/// Regression test for #376: an empty `rules` list is rejected by
+/// `register_alert`, `update_alert` and `batch_register_alert`.
+#[test]
+fn test_regression_empty_rules_are_rejected() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    assert_eq!(
+        client
+            .try_register_alert(&owner, &target, &str(&env, "A"), &hash64(&env), &vec![&env])
+            .unwrap_err()
+            .unwrap(),
+        ContractError::EmptyRules
+    );
+
+    let id = register(&env, &client, &owner, "A");
+    assert_eq!(
+        client
+            .try_update_alert(&owner, &id, &vec![&env], &true)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::EmptyRules
+    );
+
+    let input = crate::AlertInput {
+        owner: owner.clone(),
+        target_contract: target,
+        label: str(&env, "B"),
+        webhook_hash: hash64(&env),
+        rules: vec![&env],
+    };
+    assert_eq!(
+        client
+            .try_batch_register_alert(&vec![&env, input])
+            .unwrap_err()
+            .unwrap(),
+        ContractError::EmptyRules
+    );
+}
