@@ -511,9 +511,8 @@ fn test_gated_mode_accepts_registered_watcher() {
 
 // ── Feature A: watcher.remove event ──────────────────────────────────────────
 
-/// Removing a watcher emits a `("watcher", "remove")` event with the correct
-/// address as data.  Dependent systems must subscribe to this event to revoke
-/// trust immediately.
+/// Removing a watcher emits a `("watcher", "remove")` event with the removed
+/// address in a one-element data tuple.
 #[test]
 fn test_remove_watcher_emits_event_with_correct_address() {
     use soroban_sdk::{symbol_short, testutils::Events as _};
@@ -538,7 +537,7 @@ fn test_remove_watcher_emits_event_with_correct_address() {
         .expect("watcher.remove event must be emitted");
 
     let (_, _, data) = remove_event;
-    let emitted: Address = soroban_sdk::FromVal::from_val(&env, &data);
+    let (emitted,): (Address,) = soroban_sdk::FromVal::from_val(&env, &data);
     assert_eq!(
         emitted, watcher,
         "event data must carry the deauthorized watcher address"
