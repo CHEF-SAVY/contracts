@@ -18,4 +18,10 @@ path = "fuzz_targets/validate_rule.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "register_alert"
+path = "fuzz_targets/register_alert.rs"
+test = false
+doc = false
+
 [workspace]
