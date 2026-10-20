@@ -2516,6 +2516,8 @@ fn test_batch_register_alert_with_real_auth_trees_repeated_owner() {
     // Verify env.auths() shows one owner (even though require_auth was called twice)
     let auths = env.auths();
     assert_eq!(auths.len(), 1, "One owner should appear once in auth list");
+}
+
 #[test]
 fn test_batch_remove_alert_ignores_duplicate_ids() {
     let (env, client) = setup();
@@ -3380,6 +3382,10 @@ fn test_set_watcher_registry_recovers_after_invalid_attempt() {
     assert_eq!(
         alert_client.get_watcher_registry().unwrap(),
         watcher_contract_id
+    );
+    assert!(alert_client.get_watcher_registry().is_some());
+}
+
 // 17b. clear_watcher_registry disables gating; set_watcher_registry can
 // re-enable it afterward.
 #[test]

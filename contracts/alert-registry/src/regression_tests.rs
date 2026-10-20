@@ -1112,6 +1112,37 @@ fn test_regression_owner_cannot_undo_admin_deactivation() {
 
 #[test]
 fn test_regression_admin_suspension_follows_the_alert() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let owner = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+    let rules = vec![&env, str(&env, "rule:transfer")];
+    let id = client.register_alert(
+        &owner,
+        &Address::generate(&env),
+        &str(&env, "Spam"),
+        &hash64(&env),
+        &rules,
+    );
+    client.deactivate_alert_by_admin(&admin, &id);
+
+    // Handing the alert to another account does not escape the suspension.
+    client.propose_alert_transfer(&owner, &id, &new_owner);
+    client.accept_alert_transfer(&new_owner, &id);
+    assert_eq!(
+        client
+            .try_update_alert(&new_owner, &id, &rules, &true)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::AlertSuspended
+    );
+
+    // Removing the alert clears the flag with it.
+    client.remove_alert(&new_owner, &id);
+    assert!(!client.is_alert_suspended(&id));
+}
+
 /// Regression test for #204:
 /// `deactivate_all_alerts` returned a plain `0` while paused, which callers
 /// could not tell apart from "owner had no active alerts". It now returns

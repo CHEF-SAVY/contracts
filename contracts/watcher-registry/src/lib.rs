@@ -2421,6 +2421,15 @@ mod tests {
         }
         assert_eq!(client.get_watcher_count(), MAX_WATCHERS);
 
+        assert_eq!(
+            client
+                .try_register_watcher(&admin, &Address::generate(&env))
+                .unwrap_err()
+                .unwrap(),
+            ContractError::MaxWatchersReached
+        );
+    }
+
     #[test]
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_propose_admin_transfer_requires_auth() {
@@ -2512,6 +2521,12 @@ mod tests {
         assert_eq!(
             client
                 .try_upgrade(&attacker, &wasm_hash)
+                .unwrap_err()
+                .unwrap(),
+            ContractError::Unauthorized
+        );
+    }
+
     // ── register_watchers (batch) tests ──────────────────────────────────────
 
     // 31. Happy path — register_watchers registers all new addresses
@@ -2870,6 +2885,8 @@ mod tests {
 
         assert_eq!(client.get_watchers().len(), 0);
         assert_eq!(client.get_watcher_count(), 0);
+    }
+
     // 34. register_watchers emits one event per newly-added watcher
     #[test]
     fn test_register_watchers_emits_one_event_per_watcher() {
@@ -2882,6 +2899,8 @@ mod tests {
         client.register_watchers(&admin, &vec![&env, w1, w2]);
 
         assert_eq!(env.events().all().len(), 2);
+    }
+
     // 31. self-replace (old == new) is a no-op — no spurious watcher.remove
     #[test]
     fn test_replace_watcher_self_replace_emits_no_events() {
@@ -2898,6 +2917,8 @@ mod tests {
         );
         assert!(client.is_watcher_authorized(&w));
         assert_eq!(client.get_watcher_count(), 1);
+    }
+
     // ── Role policy tests ─────────────────────────────────────────────────────
 
     // 31. An address may hold both the admin and watcher roles at once.
