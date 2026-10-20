@@ -145,3 +145,32 @@ fn test_regression_remove_last_admin_lockout() {
     );
     assert_eq!(client.get_admins().len(), 1);
 }
+
+/// Regression test for #380:
+/// Redundant `pause` (when already paused) and `unpause` (when already running)
+/// calls are silent no-ops that do not emit duplicate `admin.pause` or
+/// `admin.unpause` events.
+#[test]
+fn test_regression_pause_and_unpause_redundant_transitions_are_noops() {
+    let (env, admin, client) = setup();
+
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+    assert!(env.events().all().is_empty());
+
+    client.pause(&admin);
+    assert!(client.is_paused());
+    assert_eq!(env.events().all().len(), 1);
+
+    client.pause(&admin);
+    assert!(client.is_paused());
+    assert!(env.events().all().is_empty());
+
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+    assert_eq!(env.events().all().len(), 1);
+
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+    assert!(env.events().all().is_empty());
+}

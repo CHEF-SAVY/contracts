@@ -852,6 +852,7 @@ impl WatcherRegistry {
     ///
     /// Intended as an emergency circuit-breaker if an admin key is suspected
     /// compromised — mutations can be frozen while the incident is investigated.
+    /// Calling `pause` while already paused does nothing.
     /// # Auth
     /// Requires a valid Stellar auth signature from `caller`, who must be an
     /// existing admin.
@@ -861,13 +862,16 @@ impl WatcherRegistry {
     pub fn pause(env: Env, caller: Address) -> Result<(), ContractError> {
         caller.require_auth();
         Self::assert_admin(&env, &caller)?;
-        env.storage().instance().set(&DataKey::Paused, &true);
-        env.events()
-            .publish((symbol_short!("admin"), symbol_short!("pause")), caller);
+        if !Self::is_paused(env.clone()) {
+            env.storage().instance().set(&DataKey::Paused, &true);
+            env.events()
+                .publish((symbol_short!("admin"), symbol_short!("pause")), caller);
+        }
         Ok(())
     }
 
     /// Resume normal operation after a [`WatcherRegistry::pause`].
+    /// Calling `unpause` while not paused does nothing.
     /// # Auth
     /// Requires a valid Stellar auth signature from `caller`, who must be an
     /// existing admin.
@@ -877,9 +881,11 @@ impl WatcherRegistry {
     pub fn unpause(env: Env, caller: Address) -> Result<(), ContractError> {
         caller.require_auth();
         Self::assert_admin(&env, &caller)?;
-        env.storage().instance().set(&DataKey::Paused, &false);
-        env.events()
-            .publish((symbol_short!("admin"), symbol_short!("unpause")), caller);
+        if Self::is_paused(env.clone()) {
+            env.storage().instance().set(&DataKey::Paused, &false);
+            env.events()
+                .publish((symbol_short!("admin"), symbol_short!("unpause")), caller);
+        }
         Ok(())
     }
 
@@ -1913,6 +1919,37 @@ mod tests {
             client.try_pause(&attacker).unwrap_err().unwrap(),
             ContractError::Unauthorized
         );
+    }
+
+    #[test]
+    fn test_pause_and_unpause_are_idempotent() {
+        let (env, admin, client) = setup();
+
+        // Unpausing while already running is a silent no-op.
+        assert!(!client.is_paused());
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+        assert!(env.events().all().is_empty());
+
+        // First pause transitions state and emits admin.pause.
+        client.pause(&admin);
+        assert!(client.is_paused());
+        assert_eq!(env.events().all().len(), 1);
+
+        // Pausing while already paused is a silent no-op.
+        client.pause(&admin);
+        assert!(client.is_paused());
+        assert!(env.events().all().is_empty());
+
+        // First unpause transitions state and emits admin.unpause.
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+        assert_eq!(env.events().all().len(), 1);
+
+        // Unpausing again while running is a silent no-op.
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+        assert!(env.events().all().is_empty());
     }
 
     // 13. add_admin — second admin can perform privileged operations

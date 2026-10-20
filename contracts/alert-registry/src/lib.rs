@@ -640,6 +640,7 @@ impl AlertRegistry {
     ///
     /// Intended as an emergency circuit-breaker if an admin key is suspected
     /// compromised — mutations can be frozen while the incident is investigated.
+    /// Calling `pause` while already paused does nothing.
     ///
     /// Every state-mutating entry point returns [`ContractError::Paused`] while
     /// paused, with these deliberate exemptions:
@@ -654,14 +655,17 @@ impl AlertRegistry {
     pub fn pause(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
-        env.storage().instance().set(&instance_key::PAUSED, &true);
-        Self::extend_instance_ttl(&env);
-        env.events()
-            .publish((symbol_short!("admin"), symbol_short!("pause")), admin);
+        if !Self::is_paused(env.clone()) {
+            env.storage().instance().set(&instance_key::PAUSED, &true);
+            Self::extend_instance_ttl(&env);
+            env.events()
+                .publish((symbol_short!("admin"), symbol_short!("pause")), admin);
+        }
         Ok(())
     }
 
     /// Resume normal operation after a [`AlertRegistry::pause`].
+    /// Calling `unpause` while not paused does nothing.
     /// # Auth
     /// Requires a valid Stellar auth signature from `admin`.
     /// # Errors
@@ -670,10 +674,12 @@ impl AlertRegistry {
     pub fn unpause(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
-        env.storage().instance().set(&instance_key::PAUSED, &false);
-        Self::extend_instance_ttl(&env);
-        env.events()
-            .publish((symbol_short!("admin"), symbol_short!("unpause")), admin);
+        if Self::is_paused(env.clone()) {
+            env.storage().instance().set(&instance_key::PAUSED, &false);
+            Self::extend_instance_ttl(&env);
+            env.events()
+                .publish((symbol_short!("admin"), symbol_short!("unpause")), admin);
+        }
         Ok(())
     }
 

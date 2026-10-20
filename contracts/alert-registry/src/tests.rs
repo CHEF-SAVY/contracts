@@ -398,6 +398,39 @@ fn test_pause_unauthorized() {
     assert_eq!(result.unwrap_err().unwrap(), ContractError::Unauthorized);
 }
 
+#[test]
+fn test_pause_and_unpause_are_idempotent() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    // Unpausing while already running is a silent no-op.
+    assert!(!client.is_paused());
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+    assert!(env.events().all().is_empty());
+
+    // First pause transitions state and emits admin.pause.
+    client.pause(&admin);
+    assert!(client.is_paused());
+    assert_eq!(env.events().all().len(), 1);
+
+    // Pausing while already paused is a silent no-op.
+    client.pause(&admin);
+    assert!(client.is_paused());
+    assert!(env.events().all().is_empty());
+
+    // First unpause transitions state and emits admin.unpause.
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+    assert_eq!(env.events().all().len(), 1);
+
+    // Unpausing again while running is a silent no-op.
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+    assert!(env.events().all().is_empty());
+}
+
 // 5. Unauthorized remove rejected
 #[test]
 fn test_remove_unauthorized() {
