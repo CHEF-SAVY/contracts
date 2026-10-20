@@ -241,6 +241,8 @@ The `exclude_re` patterns exclude inline test modules and regression test blocks
 | `watcher-registry` | 44 | 35 | 9 | 0 | **100%** |
 | `alert-registry` | 102 | 87 | 15 | 0 | **100%** |
 
+The recorded baseline is **0 surviving mutants** across both packages (146 total mutants). The weekly [Mutation testing workflow](../.github/workflows/mutation-testing.yml) runs this check and uploads `mutants.out/` as an artifact so future survivor counts can be compared with this baseline.
+
 ### High-Value Mutants Identified & Killed
 
 During the mutation testing audit, dedicated killer unit tests were added to guarantee no subtle logic gaps survive:
@@ -249,5 +251,4 @@ During the mutation testing audit, dedicated killer unit tests were added to gua
 - **Target Contract Index Relocation**: Verifies that updating a target contract removes the alert from the old contract's index and appends it to the new contract's index.
 - **Timestamp Filter Precision**: Verifies exact inclusive boundary behavior on `get_alerts_modified_since`.
 - **Pagination Offsets**: Verifies empty return when offset exceeds total elements.
-
 
