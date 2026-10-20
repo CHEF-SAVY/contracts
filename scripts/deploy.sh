@@ -42,7 +42,7 @@ ALERT_ID=$(stellar contract deploy \
   --network "$NETWORK" \
   --rpc-url "$RPC_URL" \
   --network-passphrase "$NETWORK_PASSPHRASE" \
-  -- --admin "$ADMIN_ADDRESS")
+  -- --admin "$ADMIN_ADDRESS"
 echo "Alert Registry deployed: $ALERT_ID"
 
 echo "==> Deploying Watcher Registry..."
@@ -93,6 +93,15 @@ fi
 
 ALERT_HASH=$(sha256sum "$ALERT_WASM" | awk '{print $1}')
 WATCHER_HASH=$(sha256sum "$WATCHER_WASM" | awk '{print $1}')
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  {
+    printf 'alert_id=%s\n' "$ALERT_ID"
+    printf 'watcher_id=%s\n' "$WATCHER_ID"
+    printf 'alert_hash=%s\n' "$ALERT_HASH"
+    printf 'watcher_hash=%s\n' "$WATCHER_HASH"
+  } >> "$GITHUB_OUTPUT"
+fi
 
 echo ""
 echo "=================================================================="
