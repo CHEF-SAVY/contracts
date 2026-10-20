@@ -1,3 +1,7 @@
+// The unpaginated getters are deprecated (#384) but still part of the
+// contract ABI; these tests pin their behaviour until they are removed.
+#![allow(deprecated)]
+
 use alert_registry::ContractError as AlertError;
 use soroban_sdk::{testutils::Address as _, vec, Address, FromVal, String, Symbol};
 

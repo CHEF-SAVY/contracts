@@ -29,7 +29,7 @@ Emitted when a new alert is successfully registered.
 
 ### `alert.update`
 
-Emitted when an alert's rules or active flag are changed.
+Emitted when an alert's rules or active flag are changed via `update_alert`.
 
 | Field | Value |
 |---|---|
@@ -38,6 +38,25 @@ Emitted when an alert's rules or active flag are changed.
 | Data | `(id: u64, owner: Address, active: bool)` |
 
 **Status:** ✅ implemented (`update_alert`)
+
+> A pure activation toggle through `set_alert_active` does **not** emit this
+> topic — it emits [`alert.act_set`](#alertact_set) instead, so an indexer can
+> tell a rules rewrite from a toggle without re-fetching the alert.
+
+---
+
+### `alert.act_set`
+
+Emitted when only an alert's `active` flag is flipped via `set_alert_active`;
+the rules are unchanged.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("alert")` |
+| Topic 1 | `Symbol("act_set")` |
+| Data | `(id: u64, owner: Address, active: bool)` |
+
+**Status:** ✅ implemented (`set_alert_active`)
 
 ---
 

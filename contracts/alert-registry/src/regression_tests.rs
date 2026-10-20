@@ -1,3 +1,7 @@
+// The unpaginated getters are deprecated (#384) but still part of the
+// contract ABI; these tests pin their behaviour until they are removed.
+#![allow(deprecated)]
+
 use crate::AlertRegistry;
 use crate::AlertRegistryClient;
 use crate::ContractError;
@@ -967,6 +971,41 @@ fn test_regression_prune_expired_alerts() {
         0,
         "nothing left to prune"
     );
+}
+
+// ── #199: retargeting respects the per-contract limit ────────────────────────
+
+/// Regression test for #383: `get_alert_ids_by_owner` returned the raw owner
+/// index, so an ID whose record had already been removed was still reported as
+/// if the alert existed. It now filters out those dangling IDs.
+#[test]
+fn test_regression_get_alert_ids_by_owner_filters_dangling() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    let keep = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Keep"),
+        &hash64(&env),
+        &vec![&env, str(&env, "rule:transfer")],
+    );
+    let remove = client.register_alert(
+        &owner,
+        &Address::generate(&env),
+        &str(&env, "Remove"),
+        &hash64c(&env, '1'),
+        &vec![&env, str(&env, "rule:mint")],
+    );
+
+    assert_eq!(client.get_alert_ids_by_owner(&owner).len(), 2);
+    client.remove_alert(&owner, &remove);
+
+    let ids = client.get_alert_ids_by_owner(&owner);
+    assert_eq!(ids.len(), 1, "removed alert must not be reported as live");
+    assert_eq!(ids.get(0).unwrap(), keep);
+    // The live-counter path agrees with the filtered list.
+    assert_eq!(client.get_non_removed_alert_count(&owner), 1);
 }
 
 // ── #199: retargeting respects the per-contract limit ────────────────────────

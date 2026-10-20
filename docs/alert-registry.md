@@ -535,7 +535,9 @@ If a `WatcherRegistry` is configured, `querier` must be a registered watcher or 
 
 ### `get_alert_ids_by_owner`
 
-Returns the raw list of alert IDs owned by a given address — a thin wrapper over the underlying `OwnerIndex` entry. Use this instead of `get_alerts_by_owner` when only the IDs are needed (e.g. an existence check or count), avoiding the cost of deserializing every full `AlertConfig`.
+Returns the **live** alert IDs owned by a given address. Use this instead of `get_alerts_by_owner` when only the IDs are needed (e.g. an existence check or count), avoiding the cost of deserializing every full `AlertConfig`.
+
+Only IDs whose record still exists are returned. The underlying `OwnerIndex` keeps dangling IDs until a prune runs, and returning them here would make an existence check or a count lie (see #383). For the number of live alerts, prefer `get_non_removed_alert_count`, which reads a counter instead of filtering this list.
 
 Unlike `get_alerts_by_owner`, this is **not** subject to watcher-gating, since it exposes no alert content.
 
@@ -671,6 +673,27 @@ If a `WatcherRegistry` is configured, `querier` must be a registered watcher or 
 | `target_contract` | `Address` | Contract address to query |
 | `offset` | `u32` | Number of results to skip |
 | `limit` | `u32` | Maximum number of results to return |
+
+**Returns:** `Result<Vec<AlertConfig>, ContractError>` — may be empty.
+
+---
+
+### `get_active_contract_alerts_paged`
+
+Returns a page of **active** alert configs registered for a given target contract — the bounded replacement for `get_active_alerts_for_contract` (#384). Only the `[offset, offset + limit)` window of the contract index is walked, so the cost does not grow with the whole registry.
+
+`offset` and `limit` count index slots rather than matches, so paging stays deterministic even when most slots are inactive: advance `offset` by `limit` until the returned vec is shorter than `limit`. `limit` is clamped to the maximum page size.
+
+If a `WatcherRegistry` is configured, `querier` must be a registered watcher or the call returns `ContractError::NotAWatcher`.
+
+**Parameters**
+
+| Name | Type | Description |
+|---|---|---|
+| `querier` | `Address` | Address performing the query |
+| `target_contract` | `Address` | Contract address to query |
+| `offset` | `u32` | Number of index slots to skip |
+| `limit` | `u32` | Maximum number of index slots to scan (clamped) |
 
 **Returns:** `Result<Vec<AlertConfig>, ContractError>` — may be empty.
 

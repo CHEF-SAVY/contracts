@@ -1,3 +1,7 @@
+// The unpaginated getters are deprecated (#384) but still part of the
+// contract ABI; these tests pin their behaviour until they are removed.
+#![allow(deprecated)]
+
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
@@ -1612,6 +1616,69 @@ fn test_update_target_contract_moves_indices() {
     assert_eq!(client.get_alerts_for_contract(&querier, &target_b).len(), 1);
     assert_eq!(client.get_active_alerts_for_contract(&querier, &target_a).len(), 0);
     assert_eq!(client.get_active_alerts_for_contract(&querier, &target_b).len(), 1);
+}
+
+// #384: the paginated active-alerts getter is the bounded replacement for
+// `get_active_alerts_for_contract`; it must skip inactive alerts and honour
+// offset/limit.
+#[test]
+fn test_get_active_contract_alerts_paged() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    let querier = Address::generate(&env);
+
+    let id0 = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "A0"),
+        &hash64(&env),
+        &vec![&env],
+    );
+    let id1 = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "A1"),
+        &hash64c(&env, '1'),
+        &vec![&env],
+    );
+    let _id2 = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "A2"),
+        &hash64c(&env, '2'),
+        &vec![&env],
+    );
+
+    // Deactivate the first so the active page differs from the raw page.
+    client.set_alert_active(&owner, &id0, &false);
+
+    let active = client.get_active_contract_alerts_paged(&querier, &target, &0, &10);
+    assert_eq!(active.len(), 2);
+    assert_eq!(active.get(0).unwrap().label, str(&env, "A1"));
+
+    // The window is over index slots: offset 1, limit 1 covers the second
+    // slot only (id1), which is active.
+    let page = client.get_active_contract_alerts_paged(&querier, &target, &1, &1);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap().label, str(&env, "A1"));
+
+    // Offset 0, limit 1 covers only id0, which is inactive.
+    let page0 = client.get_active_contract_alerts_paged(&querier, &target, &0, &1);
+    assert_eq!(page0.len(), 0);
+
+    // Past the end is empty, not an error.
+    assert_eq!(
+        client
+            .get_active_contract_alerts_paged(&querier, &target, &99, &10)
+            .len(),
+        0
+    );
+
+    // Reactivating brings it back into the active page.
+    client.set_alert_active(&owner, &id0, &true);
+    let all = client.get_active_contract_alerts_paged(&querier, &target, &0, &10);
+    assert_eq!(all.len(), 3);
 }
 
 #[test]
