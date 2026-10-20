@@ -68,6 +68,16 @@ pub const INSTANCE_BUMP_AMOUNT: u32 = 535_680;
 /// Maximum number of IDs scanned by a single paginated query.
 pub const MAX_PAGE_SIZE: u32 = 100;
 
+/// Recognized rule descriptors accepted by [`AlertRegistry::validate_rule`].
+pub const VALID_RULE_DESCRIPTORS: [&str; 2] = ["rule:transfer", "rule:mint"];
+
+/// Maximum number of rule descriptors per alert, derived from [`VALID_RULE_DESCRIPTORS`].
+///
+/// Because [`AlertRegistry::validate_rules`] rejects both unrecognized descriptors and
+/// duplicate descriptors, no valid rule list can contain more entries than the number
+/// of distinct recognized descriptors.
+pub const MAX_RULES_PER_ALERT: u32 = VALID_RULE_DESCRIPTORS.len() as u32;
+
 /// Storage key variants used to address persistent and instance entries.
 #[contracttype]
 pub enum DataKey {
@@ -168,7 +178,7 @@ pub enum ContractError {
     InvalidWebhookHash = 6,
     /// The label exceeds 128 bytes.
     LabelTooLong = 7,
-    /// The rule list exceeds the 50-rule maximum.
+    /// The rule list exceeds [`MAX_RULES_PER_ALERT`] (the number of recognized rule descriptors).
     TooManyRules = 8,
     /// A rule is not a recognised rule descriptor.
     InvalidRuleDescriptor = 9,
@@ -923,7 +933,7 @@ impl AlertRegistry {
     /// Returns [`ContractError::OwnerAlertLimitExceeded`] if the owner is at the configured per-owner alert limit.
     /// Returns [`ContractError::ContractAlertLimitExceeded`] if the target contract is at the configured per-contract alert limit.
     /// Returns [`ContractError::GlobalAlertLimitExceeded`] if the registry is at the configured global alert-count ceiling.
-    /// Returns [`ContractError::TooManyRules`] if `rules` exceeds the 50-rule maximum.
+    /// Returns [`ContractError::TooManyRules`] if `rules` exceeds [`MAX_RULES_PER_ALERT`].
     /// Returns [`ContractError::InvalidRuleDescriptor`] if a rule is not a recognised descriptor.
     /// Returns [`ContractError::DuplicateRule`] if the same rule descriptor appears more than once.
     pub fn register_alert(
@@ -989,7 +999,7 @@ impl AlertRegistry {
     /// # Errors
     /// Returns [`ContractError::AlertNotFound`] if `config_id` does not identify an existing alert.
     /// Returns [`ContractError::Unauthorized`] if the caller is not authorized for this operation.
-    /// Returns [`ContractError::TooManyRules`] if `rules` exceeds the 50-rule maximum.
+    /// Returns [`ContractError::TooManyRules`] if `rules` exceeds [`MAX_RULES_PER_ALERT`].
     /// Returns [`ContractError::InvalidRuleDescriptor`] if a rule is not a recognised descriptor.
     /// Returns [`ContractError::DuplicateRule`] if the same rule descriptor appears more than once.
     /// Returns [`ContractError::AlertSuspended`] if `active` is `true` while an admin has
@@ -2964,34 +2974,35 @@ impl AlertRegistry {
 impl AlertRegistry {
     /// Validates a single rule descriptor string.
     ///
-    /// Accepts the registry's recognized rule descriptors.
+    /// Accepts the registry's recognized rule descriptors ([`VALID_RULE_DESCRIPTORS`]).
     /// Returns [`ContractError::InvalidRuleDescriptor`] on any other string.
     ///
     /// Exposed for testing, integration, and fuzz testing.
     /// # Errors
     /// Returns [`ContractError::InvalidRuleDescriptor`] if `rule` is not recognized.
     pub fn validate_rule(env: &Env, rule: &String) -> Result<(), ContractError> {
-        let transfer = String::from_str(env, "rule:transfer");
-        let mint = String::from_str(env, "rule:mint");
-        if *rule != transfer && *rule != mint {
-            return Err(ContractError::InvalidRuleDescriptor);
+        for descriptor in VALID_RULE_DESCRIPTORS {
+            if *rule == String::from_str(env, descriptor) {
+                return Ok(());
+            }
         }
-        Ok(())
+        Err(ContractError::InvalidRuleDescriptor)
     }
 
     /// Validates a vector of rule descriptors.
     ///
-    /// Ensures at most 50 rules are supplied, each rule matches a recognized
-    /// prefix, and no descriptor appears more than once.
+    /// Ensures at most [`MAX_RULES_PER_ALERT`] rules are supplied (derived from
+    /// [`VALID_RULE_DESCRIPTORS`]), each rule matches a recognized descriptor,
+    /// and no descriptor appears more than once.
     /// Exposed for testing, integration, and fuzz testing.
     /// # Errors
-    /// Returns [`ContractError::TooManyRules`] if rules length exceeds 50.
+    /// Returns [`ContractError::TooManyRules`] if `rules.len()` exceeds [`MAX_RULES_PER_ALERT`].
     /// Returns [`ContractError::InvalidRuleDescriptor`] if any rule descriptor is invalid.
     /// Returns [`ContractError::DuplicateRule`] if the same descriptor appears more than once.
     /// # Panics
     /// Panics if indexing into `rules` fails unexpectedly.
     pub fn validate_rules(env: &Env, rules: &Vec<String>) -> Result<(), ContractError> {
-        if rules.len() > 50 {
+        if rules.len() > MAX_RULES_PER_ALERT {
             return Err(ContractError::TooManyRules);
         }
         let mut seen: Vec<String> = vec![env];

@@ -680,7 +680,7 @@ fn test_active_defaults_to_true() {
     assert!(client.get_alert(&owner, &id).unwrap().active);
 }
 
-// 13. register_alert rejects more than 50 rules
+// 13. register_alert rejects more than MAX_RULES_PER_ALERT rules
 #[test]
 #[should_panic(expected = "Error(Contract, #8)")]
 fn test_register_alert_too_many_rules() {
@@ -689,13 +689,13 @@ fn test_register_alert_too_many_rules() {
     let target = Address::generate(&env);
 
     let mut rules: Vec<String> = vec![&env];
-    for _ in 0..51u32 {
-        rules.push_back(str(&env, "rule"));
+    for _ in 0..(MAX_RULES_PER_ALERT + 1) {
+        rules.push_back(str(&env, "rule:transfer"));
     }
     client.register_alert(&owner, &target, &str(&env, "A"), &hash64(&env), &rules);
 }
 
-// 14. update_alert rejects more than 50 rules
+// 14. update_alert rejects more than MAX_RULES_PER_ALERT rules
 #[test]
 #[should_panic(expected = "Error(Contract, #8)")]
 fn test_update_alert_too_many_rules() {
@@ -706,32 +706,41 @@ fn test_update_alert_too_many_rules() {
     let id = client.register_alert(&owner, &target, &str(&env, "A"), &hash64(&env), &vec![&env]);
 
     let mut rules: Vec<String> = vec![&env];
-    for _ in 0..51u32 {
-        rules.push_back(str(&env, "rule"));
+    for _ in 0..(MAX_RULES_PER_ALERT + 1) {
+        rules.push_back(str(&env, "rule:transfer"));
     }
     client.update_alert(&owner, &id, &rules, &true);
 }
 
-// 15. exactly 50 rules is accepted
+// 15. exactly MAX_RULES_PER_ALERT distinct rules (derived from VALID_RULE_DESCRIPTORS) is accepted
 #[test]
-fn test_register_alert_exactly_50_rules() {
+fn test_register_alert_effective_max_rules() {
     let (env, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
     let mut rules: Vec<String> = vec![&env];
-    for i in 0..50u32 {
-        rules.push_back(str(
-            &env,
-            if i % 2 == 0 {
-                "rule:transfer"
-            } else {
-                "rule:mint"
-            },
-        ));
+    for descriptor in VALID_RULE_DESCRIPTORS {
+        rules.push_back(str(&env, descriptor));
     }
+    assert_eq!(rules.len(), MAX_RULES_PER_ALERT);
+
     let id = client.register_alert(&owner, &target, &str(&env, "A"), &hash64(&env), &rules);
-    assert_eq!(client.get_alert(&owner, &id).unwrap().rules.len(), 50);
+    assert_eq!(
+        client.get_alert(&owner, &id).unwrap().rules.len(),
+        MAX_RULES_PER_ALERT
+    );
+
+    // Adding one more rule exceeds MAX_RULES_PER_ALERT and returns TooManyRules.
+    let mut over_cap = rules.clone();
+    over_cap.push_back(str(&env, VALID_RULE_DESCRIPTORS[0]));
+    assert_eq!(
+        client
+            .try_register_alert(&owner, &target, &str(&env, "Over"), &hash64(&env), &over_cap)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::TooManyRules
+    );
 }
 
 // 16. Label exceeding 128 bytes is rejected
