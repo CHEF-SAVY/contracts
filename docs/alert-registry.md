@@ -353,7 +353,9 @@ Removes IDs from `owner`'s index whose alert record no longer exists (expired in
 |---|---|---|
 | `owner` | `Address` | Owner whose index is cleaned up |
 
-**Returns:** `u32` — the number of dangling IDs removed
+**Returns:** `u32` — the number of dangling IDs removed in this pass
+
+Each call examines at most `MAX_PRUNE_PER_CALL` (50) index entries, resuming from a stored `PruneCursor`, like `deactivate_all_alerts`. `get_prune_cursor(owner) -> Option<u32>` returns `Some(_)` while a scan is still in progress; call `prune_expired_alerts` again until it returns `None`.
 
 **Events:** Emits `(Symbol("alert"), Symbol("pruned"))` with data `(owner: Address, count: u32)` when at least one ID was removed.
 
@@ -655,6 +657,8 @@ Extends the TTL of an alert and its index entries without modifying any data. Th
 
 **Errors:** `AlertNotFound` if ID does not exist; `Unauthorized` if caller is not the owner.
 
+`renew_alert_ttl` always extends to `DEFAULT_TTL`. To renew for longer, use `renew_alert_ttl_for(caller, config_id, ttl)`: same auth and effects, but it extends to `ttl` ledgers, which must be between `DEFAULT_TTL` and `MAX_TTL` (otherwise `InvalidTtl`).
+
 ---
 
 ### `get_contract_alerts_paginated`
@@ -861,6 +865,7 @@ This includes admin moderation (`deactivate_alert_by_admin`, `unlock_alert_by_ad
 | `AlertSuspended` | 21 | `update_alert` tried to reactivate an alert suspended by `deactivate_alert_by_admin` |
 | `EmptyLabel` | 22 | `label` is empty |
 | `NoopWebhookRotation` | 23 | `propose_webhook` called with a hash that is already live or already pending |
+| `InvalidTtl` | 26 | `bump_alert` called with a TTL below `DEFAULT_TTL`, or `renew_alert_ttl_for` called with a TTL outside `DEFAULT_TTL..=MAX_TTL` |
 
 ---
 

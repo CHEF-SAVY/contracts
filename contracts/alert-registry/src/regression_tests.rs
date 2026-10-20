@@ -1638,3 +1638,108 @@ fn test_regression_instance_keys_match_legacy_symbols() {
     assert_eq!(client.get_per_owner_alert_limit(), 3);
     assert!(client.is_paused());
 }
+
+fn alert_ttl(env: &Env, client: &AlertRegistryClient, id: u64) -> u32 {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    env.as_contract(&client.address, || {
+        env.storage().persistent().get_ttl(&crate::DataKey::Alert(id))
+    })
+}
+
+/// Regression test for #371: proposing a transfer extends the alert to at
+/// least the transfer window, so the recipient can still accept on day 6.
+#[test]
+fn test_regression_alert_outlives_open_transfer_window() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+    let id = register(&env, &client, &owner, "A");
+    assert!(alert_ttl(&env, &client, id) < crate::ALERT_TRANSFER_EXPIRY_LEDGERS);
+
+    client.propose_alert_transfer(&owner, &id, &new_owner);
+    assert!(alert_ttl(&env, &client, id) >= crate::ALERT_TRANSFER_EXPIRY_LEDGERS);
+
+    // Day 6 (17,280 ledgers per day): the alert must still be live and acceptable.
+    env.ledger().with_mut(|li| li.sequence_number += 6 * 17_280);
+    assert!(alert_ttl(&env, &client, id) >= crate::ALERT_TRANSFER_EXPIRY_LEDGERS - 6 * 17_280);
+    client.accept_alert_transfer(&new_owner, &id);
+    assert_eq!(client.get_alert(&new_owner, &id).unwrap().owner, new_owner);
+}
+
+/// Regression test for #372: owners can renew for a chosen TTL up to MAX_TTL.
+#[test]
+fn test_regression_renew_alert_ttl_for_extends_to_requested_ttl() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let id = register(&env, &client, &owner, "A");
+
+    client.renew_alert_ttl_for(&owner, &id, &crate::MAX_TTL);
+    assert_eq!(alert_ttl(&env, &client, id), crate::MAX_TTL);
+
+    assert_eq!(
+        client
+            .try_renew_alert_ttl_for(&Address::generate(&env), &id, &crate::MAX_TTL)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::Unauthorized
+    );
+    for bad in [0, crate::DEFAULT_TTL - 1, crate::MAX_TTL + 1] {
+        assert_eq!(
+            client
+                .try_renew_alert_ttl_for(&owner, &id, &bad)
+                .unwrap_err()
+                .unwrap(),
+            ContractError::InvalidTtl
+        );
+    }
+}
+
+/// Regression test for #373: `bump_alert` rejects TTLs below DEFAULT_TTL and
+/// emits no event for them.
+#[test]
+fn test_regression_bump_alert_rejects_ttl_below_default() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let id = register(&env, &client, &owner, "A");
+
+    for bad in [0, 1, crate::DEFAULT_TTL - 1] {
+        assert_eq!(
+            client.try_bump_alert(&id, &bad).unwrap_err().unwrap(),
+            ContractError::InvalidTtl
+        );
+        assert!(
+            env.events().all().is_empty(),
+            "a rejected bump must not emit alert.bump"
+        );
+    }
+    client.bump_alert(&id, &crate::DEFAULT_TTL);
+}
+
+/// Regression test for #374: pruning examines at most MAX_PRUNE_PER_CALL
+/// entries per call and resumes from a cursor, in a single pass.
+#[test]
+fn test_regression_prune_expired_alerts_is_bounded_and_resumable() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let total = crate::MAX_PRUNE_PER_CALL * 3 + 7;
+    for _ in 0..total {
+        let id = register(&env, &client, &owner, "A");
+        expire_alert_record(&env, &client, id);
+    }
+
+    let mut removed_total = 0;
+    let mut passes = 0;
+    loop {
+        let removed = client.prune_expired_alerts(&owner);
+        assert!(removed <= crate::MAX_PRUNE_PER_CALL, "a pass must be bounded");
+        removed_total += removed;
+        passes += 1;
+        if client.get_prune_cursor(&owner).is_none() {
+            break;
+        }
+    }
+    assert_eq!(removed_total, total);
+    assert_eq!(passes, 4);
+    assert_eq!(client.get_non_removed_alert_count(&owner), 0);
+    assert_eq!(client.get_alert_ids_by_owner(&owner).len(), 0);
+}

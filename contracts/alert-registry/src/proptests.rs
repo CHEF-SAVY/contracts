@@ -549,6 +549,8 @@ fn run_state_machine(actions: Vec<AlertAction>) {
                     let res = client.try_bump_alert(&id, &ttl);
                     if alert.removed {
                         assert_eq!(res.unwrap_err().unwrap(), ContractError::AlertNotFound);
+                    } else if ttl < crate::DEFAULT_TTL {
+                        assert_eq!(res.unwrap_err().unwrap(), ContractError::InvalidTtl);
                     } else {
                         assert_eq!(res.unwrap(), Ok(()));
                     }
@@ -771,7 +773,7 @@ proptest! {
     }
 
     #[test]
-    fn proptest_bump_alert_ttl_clamping(requested_ttl in any::<u32>()) {
+    fn proptest_bump_alert_ttl_clamping(requested_ttl in crate::DEFAULT_TTL..=u32::MAX) {
         let (env, _admin, client) = create_env_and_client();
         let owner = Address::generate(&env);
         let target = Address::generate(&env);
@@ -784,7 +786,7 @@ proptest! {
             &valid_rules(&env, 1),
         );
 
-        // bump_alert is permissionless and succeeds for any requested TTL
+        // bump_alert is permissionless and succeeds for any requested TTL >= DEFAULT_TTL
         let res = client.try_bump_alert(&id, &requested_ttl);
         assert_eq!(res.unwrap(), Ok(()));
 
