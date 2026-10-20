@@ -58,6 +58,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # Issue #387 — Fail on broken intra-doc links in rustdoc
+      - name: Check rustdoc links
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
+
       # Issue #101 — Formatting check
       - name: Format check
         run: cargo fmt --check
