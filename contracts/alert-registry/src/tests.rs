@@ -394,8 +394,9 @@ fn test_pause_unauthorized() {
     client.initialize(&admin);
     let attacker = Address::generate(&env);
 
+    // A caller that is neither admin nor guardian receives NotAGuardian.
     let result = client.try_pause(&attacker);
-    assert_eq!(result.unwrap_err().unwrap(), ContractError::Unauthorized);
+    assert_eq!(result.unwrap_err().unwrap(), ContractError::NotAGuardian);
 }
 
 // 5. Unauthorized remove rejected
@@ -6847,4 +6848,349 @@ fn test_ttl_constants() {
     assert_eq!(DEFAULT_TTL, 17_280);
     // MAX_TTL ≈ 31 days at 5 s/ledger
     assert_eq!(MAX_TTL, 535_680);
+}
+
+// ── Guardian role (#390) ──────────────────────────────────────────────────────
+
+// G-1. get_guardian returns None before any guardian is set.
+#[test]
+fn test_get_guardian_none_before_set() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    assert!(client.get_guardian().is_none());
+}
+
+// G-2. set_guardian persists the address; get_guardian returns it.
+#[test]
+fn test_set_and_get_guardian() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert_eq!(client.try_set_guardian(&admin, &guardian).unwrap(), Ok(()));
+    assert_eq!(client.get_guardian(), Some(guardian));
+}
+
+// G-3. set_guardian is admin-only; a non-admin is rejected with Unauthorized.
+#[test]
+fn test_set_guardian_non_admin_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert_eq!(
+        client
+            .try_set_guardian(&attacker, &guardian)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::Unauthorized
+    );
+}
+
+// G-4. set_guardian requires a valid auth signature from the admin key.
+#[test]
+#[should_panic(expected = "Error(Auth, InvalidAction)")]
+fn test_set_guardian_requires_auth() {
+    let env = Env::default();
+    let contract_id = env.register(AlertRegistry, ());
+    let client = AlertRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    env.mock_all_auths();
+    client.initialize(&admin);
+    env.set_auths(&[]);
+    client.set_guardian(&admin, &guardian);
+}
+
+// G-5. clear_guardian removes the guardian; subsequent get_guardian is None.
+#[test]
+fn test_clear_guardian_removes_guardian() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.set_guardian(&admin, &guardian);
+    assert!(client.get_guardian().is_some());
+
+    assert_eq!(client.try_clear_guardian(&admin).unwrap(), Ok(()));
+    assert!(client.get_guardian().is_none());
+}
+
+// G-6. clear_guardian is admin-only; a non-admin is rejected with Unauthorized.
+#[test]
+fn test_clear_guardian_non_admin_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert_eq!(
+        client.try_clear_guardian(&attacker).unwrap_err().unwrap(),
+        ContractError::Unauthorized
+    );
+}
+
+// G-7. clear_guardian silently succeeds when no guardian is configured.
+#[test]
+fn test_clear_guardian_idempotent_when_none() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert_eq!(client.try_clear_guardian(&admin).unwrap(), Ok(()));
+    assert!(client.get_guardian().is_none());
+}
+
+// G-8. Guardian can call pause; the contract becomes paused.
+#[test]
+fn test_guardian_can_pause() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin);
+    client.set_guardian(&admin, &guardian);
+
+    assert!(!client.is_paused());
+    assert_eq!(client.try_pause(&guardian).unwrap(), Ok(()));
+    assert!(client.is_paused());
+}
+
+// G-9. Guardian cannot call unpause — only the admin may lift the pause.
+#[test]
+fn test_guardian_cannot_unpause() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin);
+    client.set_guardian(&admin, &guardian);
+
+    client.pause(&guardian);
+    assert!(client.is_paused());
+
+    assert_eq!(
+        client.try_unpause(&guardian).unwrap_err().unwrap(),
+        ContractError::Unauthorized
+    );
+    assert!(client.is_paused(), "contract must still be paused after failed unpause");
+}
+
+// G-10. Admin can still pause (existing behaviour preserved after the change
+// to accept a `caller` argument).
+#[test]
+fn test_admin_can_still_pause() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert_eq!(client.try_pause(&admin).unwrap(), Ok(()));
+    assert!(client.is_paused());
+}
+
+// G-11. A random address that is neither admin nor guardian is rejected with
+// NotAGuardian (not the generic Unauthorized).
+#[test]
+fn test_stranger_cannot_pause() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert_eq!(
+        client.try_pause(&stranger).unwrap_err().unwrap(),
+        ContractError::NotAGuardian
+    );
+}
+
+// G-12. After clear_guardian the former guardian can no longer pause.
+#[test]
+fn test_cleared_guardian_cannot_pause() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin);
+    client.set_guardian(&admin, &guardian);
+
+    // Guardian can pause before being cleared.
+    assert_eq!(client.try_pause(&guardian).unwrap(), Ok(()));
+    client.unpause(&admin);
+
+    client.clear_guardian(&admin);
+
+    // Former guardian is now a stranger — must be rejected.
+    assert_eq!(
+        client.try_pause(&guardian).unwrap_err().unwrap(),
+        ContractError::NotAGuardian
+    );
+}
+
+// G-13. set_guardian emits (admin, guardian) event with Some(guardian) payload.
+#[test]
+fn test_set_guardian_emits_event() {
+    use soroban_sdk::{symbol_short, testutils::Events as _};
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.set_guardian(&admin, &guardian);
+
+    let events = env.events().all();
+    let guardian_event = events
+        .iter()
+        .find(|(_, topics, _)| {
+            topics.len() == 2
+                && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("admin")
+                && Symbol::from_val(&env, &topics.get(1).unwrap()) == symbol_short!("guardian")
+        })
+        .expect("admin.guardian event must be emitted by set_guardian");
+
+    let (_, _, data) = guardian_event;
+    let (emitted_admin, emitted_guardian): (Address, Option<Address>) =
+        soroban_sdk::FromVal::from_val(&env, &data);
+    assert_eq!(emitted_admin, admin);
+    assert_eq!(emitted_guardian, Some(guardian));
+}
+
+// G-14. clear_guardian emits (admin, guardian) event with None payload.
+#[test]
+fn test_clear_guardian_emits_event() {
+    use soroban_sdk::{symbol_short, testutils::Events as _};
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin);
+    client.set_guardian(&admin, &guardian);
+
+    client.clear_guardian(&admin);
+
+    let events = env.events().all();
+
+    // Walk all events to find the last admin.guardian one (the clear event).
+    let mut last_guardian_data: Option<soroban_sdk::Val> = None;
+    let mut count: u32 = 0;
+    for i in 0..events.len() {
+        let (_, topics, data) = events.get(i).unwrap();
+        if topics.len() == 2
+            && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("admin")
+            && Symbol::from_val(&env, &topics.get(1).unwrap()) == symbol_short!("guardian")
+        {
+            last_guardian_data = Some(data);
+            count += 1;
+        }
+    }
+
+    assert!(
+        count >= 2,
+        "expected at least two admin.guardian events (set + clear), got {count}"
+    );
+
+    let last_data = last_guardian_data.expect("at least one admin.guardian event must exist");
+    let (_, emitted_guardian): (Address, Option<Address>) =
+        soroban_sdk::FromVal::from_val(&env, &last_data);
+    assert!(
+        emitted_guardian.is_none(),
+        "clear_guardian event must carry None guardian payload"
+    );
+}
+
+// G-15. pause emits (admin, pause) event carrying the guardian's address
+// (not the admin's) when called by the guardian.
+#[test]
+fn test_guardian_pause_emits_event() {
+    use soroban_sdk::{symbol_short, testutils::Events as _};
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin);
+    client.set_guardian(&admin, &guardian);
+
+    client.pause(&guardian);
+
+    let events = env.events().all();
+    let pause_event = events
+        .iter()
+        .find(|(_, topics, _)| {
+            topics.len() == 2
+                && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("admin")
+                && Symbol::from_val(&env, &topics.get(1).unwrap()) == symbol_short!("pause")
+        })
+        .expect("admin.pause event must be emitted");
+
+    let (_, _, data) = pause_event;
+    let emitted_caller: Address = soroban_sdk::FromVal::from_val(&env, &data);
+    assert_eq!(
+        emitted_caller, guardian,
+        "pause event data must be the guardian address, not the admin address"
+    );
+}
+
+// G-16. get_configuration includes the guardian field.
+#[test]
+fn test_get_configuration_includes_guardian() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    client.initialize(&admin);
+
+    let cfg_before = client.get_configuration().unwrap();
+    assert!(cfg_before.guardian.is_none());
+
+    client.set_guardian(&admin, &guardian);
+    let cfg_after = client.get_configuration().unwrap();
+    assert_eq!(cfg_after.guardian, Some(guardian.clone()));
+
+    client.clear_guardian(&admin);
+    let cfg_cleared = client.get_configuration().unwrap();
+    assert!(cfg_cleared.guardian.is_none());
+}
+
+// G-17. Guardian-triggered pause blocks state mutations; admin lifts it.
+#[test]
+fn test_guardian_pause_blocks_mutations() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    client.initialize(&admin);
+    client.set_guardian(&admin, &guardian);
+
+    client.pause(&guardian);
+    assert!(client.is_paused());
+
+    assert_eq!(
+        client
+            .try_register_alert(
+                &owner,
+                &target,
+                &str(&env, "Alert"),
+                &hash64(&env),
+                &vec![&env, str(&env, "rule:transfer")],
+            )
+            .unwrap_err()
+            .unwrap(),
+        ContractError::Paused
+    );
+
+    // Only admin can lift the pause.
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+
+    // After unpause the registration goes through.
+    let id = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Alert"),
+        &hash64(&env),
+        &vec![&env, str(&env, "rule:transfer")],
+    );
+    assert!(client.get_alert(&owner, &id).is_some());
 }

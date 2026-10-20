@@ -144,6 +144,10 @@ pub mod instance_key {
     pub const LIVE: Symbol = symbol_short!("LIVE");
     /// `Address` of the optional `WatcherRegistry` used for read gating.
     pub const WATCHREG: Symbol = symbol_short!("WATCHREG");
+    /// `Address` of the optional guardian — a limited role that may call
+    /// `pause` but never `unpause` or any other admin function. See
+    /// [`crate::AlertRegistry::set_guardian`].
+    pub const GUARDIAN: Symbol = symbol_short!("GUARDIAN");
 }
 
 /// Errors returned by `AlertRegistry` entry points.
@@ -215,6 +219,9 @@ pub enum ContractError {
     /// Returned by `propose_webhook` when the proposed hash is already live
     /// or already pending.
     NoopWebhookRotation = 23,
+    /// Returned by `pause` when called by an address that is neither the
+    /// admin nor the configured guardian.
+    NotAGuardian = 24,
 }
 
 // ── Data types ───────────────────────────────────────────────────────────────
@@ -304,6 +311,8 @@ pub struct RegistryConfiguration {
     pub global_alert_limit: u32,
     /// Configured watcher registry, if watcher-gating is enabled.
     pub watcher_registry: Option<Address>,
+    /// Optional guardian address that may call `pause` but not `unpause`.
+    pub guardian: Option<Address>,
 }
 
 // ── Contract ─────────────────────────────────────────────────────────────────
@@ -632,7 +641,8 @@ impl AlertRegistry {
             per_owner_alert_limit: Self::get_per_owner_alert_limit(env.clone()),
             per_contract_alert_limit: Self::get_per_contract_alert_limit(env.clone()),
             global_alert_limit: Self::get_global_alert_limit(env.clone()),
-            watcher_registry: Self::get_watcher_registry(env),
+            watcher_registry: Self::get_watcher_registry(env.clone()),
+            guardian: Self::get_guardian(env),
         })
     }
 
@@ -646,22 +656,34 @@ impl AlertRegistry {
     /// - `pause` / `unpause`, so the circuit-breaker can be operated;
     /// - `initialize`, the one-time admin bootstrap;
     /// - `upgrade`, so a hot-fix can be deployed during an incident.
+    ///
+    /// Either the **admin** or the configured **guardian** (see
+    /// [`AlertRegistry::set_guardian`]) may call `pause`. Only the admin may
+    /// call `unpause`; the guardian has no power to lift the pause, keeping
+    /// its blast radius strictly limited to tripping the circuit-breaker.
+    ///
     /// # Auth
-    /// Requires a valid Stellar auth signature from `admin`.
+    /// Requires a valid Stellar auth signature from `caller` (admin or guardian).
     /// # Errors
     /// Returns [`ContractError::NotInitialized`] if the contract has not been initialized.
-    /// Returns [`ContractError::Unauthorized`] if the caller is not authorized for this operation.
-    pub fn pause(env: Env, admin: Address) -> Result<(), ContractError> {
-        admin.require_auth();
-        Self::assert_admin(&env, &admin)?;
+    /// Returns [`ContractError::NotAGuardian`] if `caller` is neither the admin nor the
+    /// configured guardian.
+    pub fn pause(env: Env, caller: Address) -> Result<(), ContractError> {
+        caller.require_auth();
+        Self::assert_admin_or_guardian(&env, &caller)?;
         env.storage().instance().set(&instance_key::PAUSED, &true);
         Self::extend_instance_ttl(&env);
         env.events()
-            .publish((symbol_short!("admin"), symbol_short!("pause")), admin);
+            .publish((symbol_short!("admin"), symbol_short!("pause")), caller);
         Ok(())
     }
 
     /// Resume normal operation after a [`AlertRegistry::pause`].
+    ///
+    /// Only the **admin** may unpause; the guardian role is intentionally
+    /// excluded so an on-call operator that trips the circuit-breaker cannot
+    /// also silently re-enable mutations without a more privileged key.
+    ///
     /// # Auth
     /// Requires a valid Stellar auth signature from `admin`.
     /// # Errors
@@ -684,6 +706,80 @@ impl AlertRegistry {
             .instance()
             .get(&instance_key::PAUSED)
             .unwrap_or(false)
+    }
+
+    /// Set the guardian address (admin only).
+    ///
+    /// The guardian is a limited-privilege role designed for on-call operators or
+    /// monitoring bots that must be able to trip the circuit-breaker quickly,
+    /// without holding a key that can also upgrade the contract, change limits,
+    /// or transfer admin control. The guardian may call [`AlertRegistry::pause`]
+    /// but **cannot** call [`AlertRegistry::unpause`] or any other admin function.
+    ///
+    /// Calling this again replaces the existing guardian; call
+    /// [`AlertRegistry::clear_guardian`] to remove the guardian entirely.
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `admin`.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::NotInitialized`] if the contract has not been initialized.
+    /// Returns [`ContractError::Unauthorized`] if `admin` is not the current admin.
+    ///
+    /// # Events
+    /// Emits `(Symbol("admin"), Symbol("guardian"))` with data
+    /// `(admin: Address, Some(guardian: Address))`.
+    pub fn set_guardian(
+        env: Env,
+        admin: Address,
+        guardian: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .set(&instance_key::GUARDIAN, &guardian);
+        Self::extend_instance_ttl(&env);
+        env.events().publish(
+            (symbol_short!("admin"), symbol_short!("guardian")),
+            (admin, Some(guardian)),
+        );
+        Ok(())
+    }
+
+    /// Return the configured guardian address, or `None` if no guardian is set.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        env.storage().instance().get(&instance_key::GUARDIAN)
+    }
+
+    /// Remove the guardian address (admin only).
+    ///
+    /// After this call, only the admin may call [`AlertRegistry::pause`].
+    ///
+    /// Silently succeeds if no guardian is currently configured.
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `admin`.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::NotInitialized`] if the contract has not been initialized.
+    /// Returns [`ContractError::Unauthorized`] if `admin` is not the current admin.
+    ///
+    /// # Events
+    /// Emits `(Symbol("admin"), Symbol("guardian"))` with data
+    /// `(admin: Address, None)`.
+    pub fn clear_guardian(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin)?;
+        env.storage()
+            .instance()
+            .remove(&instance_key::GUARDIAN);
+        Self::extend_instance_ttl(&env);
+        env.events().publish(
+            (symbol_short!("admin"), symbol_short!("guardian")),
+            (admin, Option::<Address>::None),
+        );
+        Ok(())
     }
 
     /// Set a per-owner active alert limit (admin only). A value of `0` means no limit.
@@ -2483,6 +2579,30 @@ impl AlertRegistry {
         } else {
             Err(ContractError::Unauthorized)
         }
+    }
+
+    /// Verify that `caller` is either the current admin or the configured
+    /// guardian. Used exclusively by [`AlertRegistry::pause`], which both
+    /// roles are permitted to invoke.
+    ///
+    /// Returns [`ContractError::NotInitialized`] when the admin has not been
+    /// set (the contract hasn't been bootstrapped).
+    /// Returns [`ContractError::NotAGuardian`] when `caller` is neither the
+    /// admin nor the configured guardian.
+    fn assert_admin_or_guardian(env: &Env, caller: &Address) -> Result<(), ContractError> {
+        if !env.storage().instance().has(&instance_key::ADMIN) {
+            return Err(ContractError::NotInitialized);
+        }
+        let admin: Address = env.storage().instance().get(&instance_key::ADMIN).unwrap();
+        if admin == *caller {
+            return Ok(());
+        }
+        let maybe_guardian: Option<Address> =
+            env.storage().instance().get(&instance_key::GUARDIAN);
+        if maybe_guardian.as_ref() == Some(caller) {
+            return Ok(());
+        }
+        Err(ContractError::NotAGuardian)
     }
 
     fn assert_per_owner_limit(env: &Env, owner: &Address) -> Result<(), ContractError> {
