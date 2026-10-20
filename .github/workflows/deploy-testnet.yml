@@ -40,6 +40,9 @@ jobs:
           toolchain: ${{ steps.rust.outputs.channel }}
           targets: wasm32-unknown-unknown
 
+      - name: Run test suite verification
+        run: cargo test --workspace --locked
+
       # Issue #285 — Pin Stellar CLI version
       - name: Install Stellar CLI
         env:
