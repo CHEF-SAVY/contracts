@@ -45,7 +45,11 @@ jobs:
           LIVENESS_OUTCOME: ${{ steps.liveness.outcome }}
         run: |
           title="Testnet deployment liveness check failed"
-          issue_number=$(gh issue list --state open --json number,title \
+          issue_number=$(gh issue list \
+            --state open \
+            --search "in:title \"$title\"" \
+            --limit 100 \
+            --json number,title \
             --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
 
           if [[ "$LIVENESS_OUTCOME" == "failure" ]]; then
