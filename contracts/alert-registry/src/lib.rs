@@ -1462,7 +1462,8 @@ impl AlertRegistry {
     ///
     /// The alert is also **suspended**: its owner cannot reactivate it (with
     /// [`AlertRegistry::update_alert`]) until an admin calls
-    /// [`AlertRegistry::unlock_alert_by_admin`].
+    /// [`AlertRegistry::unlock_alert_by_admin`]. Suspending an alert that is
+    /// already suspended does nothing.
     ///
     /// # Auth
     /// Requires a valid Stellar auth signature from `admin`.
@@ -1470,8 +1471,10 @@ impl AlertRegistry {
     /// Returns [`ContractError::AlertNotFound`] if `config_id` does not identify an existing alert.
     /// Returns [`ContractError::NotInitialized`] if the contract has not been initialized.
     /// Returns [`ContractError::Unauthorized`] if the caller is not authorized for this operation.
+    /// Returns [`ContractError::Paused`] while the contract is paused.
     /// # Events
-    /// Emits `(Symbol("alert"), Symbol("admin_off"))` with data `(id: u64, admin: Address)`.
+    /// Emits `(Symbol("alert"), Symbol("admin_off"))` with data `(id: u64, admin: Address)`
+    /// when a suspension was applied.
     pub fn deactivate_alert_by_admin(
         env: Env,
         admin: Address,
@@ -1481,25 +1484,22 @@ impl AlertRegistry {
         Self::assert_admin(&env, &admin)?;
         Self::assert_not_paused(&env)?;
 
-        let mut config: AlertConfig = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Alert(config_id))
-            .ok_or(ContractError::AlertNotFound)?;
+        let mut config = Self::load_alert(&env, config_id)?;
 
-        config.active = false;
-        config.updated_at = env.ledger().timestamp();
-        config.updated_ledger = env.ledger().sequence();
+        let key = DataKey::AdminSuspended(config_id);
+        if !env.storage().persistent().has(&key) {
+            config.active = false;
+            config.updated_at = env.ledger().timestamp();
+            config.updated_ledger = env.ledger().sequence();
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::AdminSuspended(config_id), &true);
-        Self::persist_alert(&env, config_id, &config);
+            env.storage().persistent().set(&key, &true);
+            Self::persist_alert(&env, config_id, &config);
 
-        env.events().publish(
-            (symbol_short!("alert"), symbol_short!("admin_off")),
-            (config_id, admin),
-        );
+            env.events().publish(
+                (symbol_short!("alert"), symbol_short!("admin_off")),
+                (config_id, admin),
+            );
+        }
         Ok(())
     }
 

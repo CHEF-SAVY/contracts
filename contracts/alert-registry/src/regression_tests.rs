@@ -1638,3 +1638,59 @@ fn test_regression_instance_keys_match_legacy_symbols() {
     assert_eq!(client.get_per_owner_alert_limit(), 3);
     assert!(client.is_paused());
 }
+
+/// Regression test for #379:
+/// `deactivate_alert_by_admin` on an already-suspended alert is a no-op that
+/// does not rewrite the alert, bump `updated_ledger`, or emit `alert.admin_off`.
+#[test]
+fn test_regression_deactivate_alert_by_admin_is_idempotent() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    let id = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Spam"),
+        &hash64(&env),
+        &vec![&env, str(&env, "rule:transfer")],
+    );
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1_000;
+        li.sequence_number = 10;
+    });
+    client.deactivate_alert_by_admin(&admin, &id);
+    assert!(client.is_alert_suspended(&id));
+    let first = client.get_alert(&owner, &id).unwrap();
+    assert!(!first.active);
+    assert_eq!(first.updated_at, 1_000);
+    assert_eq!(first.updated_ledger, 10);
+    assert_eq!(env.events().all().len(), 1);
+
+    // Calling deactivate_alert_by_admin again while suspended is a silent no-op.
+    env.ledger().with_mut(|li| {
+        li.timestamp = 2_000;
+        li.sequence_number = 20;
+    });
+    client.deactivate_alert_by_admin(&admin, &id);
+    assert!(client.is_alert_suspended(&id));
+    let second = client.get_alert(&owner, &id).unwrap();
+    assert_eq!(second.updated_at, 1_000);
+    assert_eq!(second.updated_ledger, 10);
+    assert!(env.events().all().is_empty());
+
+    // After unlocking, suspending again applies the suspension and emits an event.
+    client.unlock_alert_by_admin(&admin, &id);
+    env.ledger().with_mut(|li| {
+        li.timestamp = 3_000;
+        li.sequence_number = 30;
+    });
+    client.deactivate_alert_by_admin(&admin, &id);
+    assert!(client.is_alert_suspended(&id));
+    let third = client.get_alert(&owner, &id).unwrap();
+    assert_eq!(third.updated_at, 3_000);
+    assert_eq!(third.updated_ledger, 30);
+    assert_eq!(env.events().all().len(), 1);
+}
