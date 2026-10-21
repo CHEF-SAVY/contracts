@@ -56,6 +56,9 @@ pub enum ContractError {
     Paused = 14,
     /// Returned when an operation would drop the watcher count below [`MIN_WATCHERS`].
     BelowMinWatchers = 15,
+    /// Returned by `accept_admin_transfer` when the pending admin transfer is
+    /// past its expiry ledger.
+    AdminTransferExpired = 16,
 }
 
 // ── TTL constants ────────────────────────────────────────────────────────────
@@ -68,6 +71,11 @@ pub const INSTANCE_BUMP_THRESHOLD: u32 = 17_280;
 /// TTL the instance entry is extended to. Approximately 31 days, the
 /// protocol maximum. See `docs/ttl.md`.
 pub const INSTANCE_BUMP_AMOUNT: u32 = 535_680;
+
+/// Number of ledgers a proposed admin transfer stays open for the proposed
+/// admin to accept (approximately 7 days at the nominal 5-second ledger close
+/// time). After that it can only be cancelled or replaced.
+pub const ADMIN_TRANSFER_EXPIRY_LEDGERS: u32 = 120_960;
 
 // ── Capacity limits ──────────────────────────────────────────────────────────
 
@@ -102,7 +110,7 @@ pub enum DataKey {
     Admins,
     /// Stores the `Vec<Address>` of authorized watcher nodes.
     Watchers,
-    /// Stores the `Address` proposed as the new admin set by
+    /// Stores the `(Address, u32)` pair `(new_admin, expires_at_ledger)` proposed as the new admin set by
     /// [`WatcherRegistry::propose_admin_transfer`], pending its own
     /// acceptance via [`WatcherRegistry::accept_admin_transfer`].
     PendingAdminTransfer,
@@ -300,6 +308,10 @@ impl WatcherRegistry {
     /// this prevents a typo'd or unowned address from permanently locking the
     /// contract.
     ///
+    /// The proposal expires [`ADMIN_TRANSFER_EXPIRY_LEDGERS`] ledgers after it is
+    /// made; [`WatcherRegistry::accept_admin_transfer`] then fails with
+    /// [`ContractError::AdminTransferExpired`].
+    ///
     /// This replaces any previously pending proposal. This replaces the
     /// **entire** admin set with a single new admin once accepted. Use
     /// [`WatcherRegistry::add_admin`] + [`WatcherRegistry::remove_admin`] if you want to rotate one member of a
@@ -326,9 +338,14 @@ impl WatcherRegistry {
         Self::assert_admin(&env, &admin)?;
         Self::assert_timelock_disabled(&env)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::PendingAdminTransfer, &new_admin);
+        let expires_at_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(ADMIN_TRANSFER_EXPIRY_LEDGERS);
+        env.storage().instance().set(
+            &DataKey::PendingAdminTransfer,
+            &(new_admin.clone(), expires_at_ledger),
+        );
 
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("propose")),
@@ -372,16 +389,21 @@ impl WatcherRegistry {
     /// # Errors
     /// Returns [`ContractError::NoPendingTransfer`] if no transfer is pending,
     /// or the pending proposal names a different address.
+    /// Returns [`ContractError::AdminTransferExpired`] if the proposal is past
+    /// its expiry ledger.
     pub fn accept_admin_transfer(env: Env, new_admin: Address) -> Result<(), ContractError> {
         new_admin.require_auth();
 
-        let pending: Address = env
+        let (pending, expires_at_ledger): (Address, u32) = env
             .storage()
             .instance()
             .get(&DataKey::PendingAdminTransfer)
             .ok_or(ContractError::NoPendingTransfer)?;
         if pending != new_admin {
             return Err(ContractError::NoPendingTransfer);
+        }
+        if env.ledger().sequence() > expires_at_ledger {
+            return Err(ContractError::AdminTransferExpired);
         }
 
         env.storage()
