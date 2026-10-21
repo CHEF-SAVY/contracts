@@ -3,7 +3,8 @@
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
     clippy::redundant_closure_for_method_calls,
-    clippy::vec_init_then_push
+    clippy::vec_init_then_push,
+    deprecated
 )]
 
 extern crate std;
@@ -549,6 +550,8 @@ fn run_state_machine(actions: Vec<AlertAction>) {
                     let res = client.try_bump_alert(&id, &ttl);
                     if alert.removed {
                         assert_eq!(res.unwrap_err().unwrap(), ContractError::AlertNotFound);
+                    } else if ttl < crate::DEFAULT_TTL {
+                        assert_eq!(res.unwrap_err().unwrap(), ContractError::InvalidTtl);
                     } else {
                         assert_eq!(res.unwrap(), Ok(()));
                     }
@@ -771,7 +774,7 @@ proptest! {
     }
 
     #[test]
-    fn proptest_bump_alert_ttl_clamping(requested_ttl in any::<u32>()) {
+    fn proptest_bump_alert_ttl_clamping(requested_ttl in crate::DEFAULT_TTL..=u32::MAX) {
         let (env, _admin, client) = create_env_and_client();
         let owner = Address::generate(&env);
         let target = Address::generate(&env);
@@ -784,7 +787,7 @@ proptest! {
             &valid_rules(&env, 1),
         );
 
-        // bump_alert is permissionless and succeeds for any requested TTL
+        // bump_alert is permissionless and succeeds for any requested TTL >= DEFAULT_TTL
         let res = client.try_bump_alert(&id, &requested_ttl);
         assert_eq!(res.unwrap(), Ok(()));
 
@@ -905,5 +908,46 @@ proptest! {
         // The invariant: W_CNT (active alert count) == len(OwnerIndex(owner))
         // This is ensured by the contract maintaining consistency
         assert!(active_count_expected <= 1000);
+    }
+
+    #[test]
+    fn proptest_contract_live_count_equals_contract_index_length(
+        total in 1u32..8,
+        remove_mask in prop::collection::vec(any::<bool>(), 8),
+    ) {
+        let (env, _admin, client) = create_env_and_client();
+        let owner = Address::generate(&env);
+        let target = Address::generate(&env);
+        let mut ids = Vec::new();
+        for _ in 0..total {
+            ids.push(client.register_alert(
+                &owner,
+                &target,
+                &make_str(&env, "test"),
+                &make_hash64(&env, 'x'),
+                &valid_rules(&env, 1),
+            ));
+        }
+        for (id, remove) in ids.iter().zip(remove_mask.iter()) {
+            if *remove {
+                client.remove_alert(&owner, id);
+            }
+        }
+
+        let (count, index_len): (u32, u32) = env.as_contract(&client.address, || {
+            let count = env
+                .storage()
+                .persistent()
+                .get(&crate::DataKey::ContractLiveCount(target.clone()))
+                .unwrap_or(0u32);
+            let index: SorobanVec<u64> = env
+                .storage()
+                .persistent()
+                .get(&crate::DataKey::ContractIndex(target.clone()))
+                .unwrap_or(SorobanVec::new(&env));
+            (count, index.len())
+        });
+        // ContractLiveCount == count of live IDs in ContractIndex
+        prop_assert_eq!(count, index_len);
     }
 }

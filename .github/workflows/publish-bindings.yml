@@ -87,17 +87,15 @@ jobs:
           fi
 
       # ── Generate TypeScript bindings ─────────────────────────────────────────
-      # `stellar contract bindings typescript` reads the WASM contract spec and
-      # emits a fully-typed npm package into the output directory.
+      # Generate only the client source into the curated package; keep generated
+      # package metadata from overwriting the hand-maintained npm package.
       - name: Generate WatcherRegistry TypeScript bindings
         env:
           TESTNET_ID: ${{ steps.contract.outputs.testnet_id }}
         run: |
-          stellar contract bindings typescript \
-            --wasm target/wasm32-unknown-unknown/release/watcher_registry.wasm \
-            --contract-id "$TESTNET_ID" \
-            --output-dir bindings/watcher-registry \
-            --overwrite
+          bash scripts/generate-watcher-bindings.sh \
+            target/wasm32-unknown-unknown/release/watcher_registry.wasm \
+            "$TESTNET_ID"
 
       # ── Overlay the real contract IDs into the hand-maintained entry point ───
       # src/index.ts ships in the published package and exports the `networks`
@@ -146,35 +144,19 @@ jobs:
       # The generator writes its own package.json; we overlay our curated
       # metadata (name, version, description, keywords, repository, etc.)
       # so the published package has the correct npm identity.
-      - name: Overlay package.json metadata
+      - name: Set curated package version
         run: |
           node - <<'EOF'
-          const fs   = require("fs");
+          const fs = require("fs");
           const path = "bindings/watcher-registry/package.json";
-
-          // Generated package.json from stellar CLI
-          const generated = JSON.parse(fs.readFileSync(path, "utf8"));
-
-          // Our curated metadata
-          const meta = {
-            name:        "@tx-wats/watcher-registry-bindings",
-            version:     process.env.RELEASE_TAG.replace(/^v/, ""),
-            description: "TypeScript bindings for the stellar-txwatch WatcherRegistry Soroban contract",
-            keywords:    ["stellar", "soroban", "smart-contract", "watcher-registry", "txwatch", "blockchain"],
-            author:      "Tx-wats <https://github.com/Tx-wats>",
-            license:     "Apache-2.0",
-            repository: {
-              type:      "git",
-              url:       "https://github.com/Tx-wats/contracts.git",
-              directory: "bindings/watcher-registry",
-            },
-            homepage: "https://github.com/Tx-wats/contracts#readme",
-            bugs:     { url: "https://github.com/Tx-wats/contracts/issues" },
-          };
-
-          const merged = { ...generated, ...meta };
-          fs.writeFileSync(path, JSON.stringify(merged, null, 2) + "\n");
-          console.log("package.json merged:", merged.name, merged.version);
+          const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+          const expectedName = "@tx-wats/watcher-registry-bindings";
+          if (pkg.name !== expectedName) {
+            throw new Error(`Expected ${expectedName} in ${path}, found ${pkg.name}`);
+          }
+          pkg.version = process.env.RELEASE_TAG.replace(/^v/, "");
+          fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
+          console.log("Package version set:", pkg.name, pkg.version);
           EOF
         env:
           RELEASE_TAG: ${{ github.ref_name }}

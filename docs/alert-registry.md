@@ -125,7 +125,7 @@ Registers a new alert configuration for a target contract address.
 
 | Error | Code | Cause |
 |---|---|---|
-| `TooManyRules` | 8 | More than 50 rules were supplied |
+| `TooManyRules` | 8 | More than `MAX_RULES_PER_ALERT` (`VALID_RULE_DESCRIPTORS.len()`, currently 2) rules were supplied |
 | `InvalidRuleDescriptor` | 9 | A rule is not `rule:transfer` or `rule:mint` |
 | `DuplicateRule` | 15 | The same rule descriptor appears more than once |
 
@@ -220,12 +220,21 @@ Returns the current admin address.
 
 Returns the complete administrative configuration in one call: `admin`,
 `paused`, the per-owner, per-contract, and global alert limits, and the
-optional `watcher_registry` address. This is the preferred read for dashboards
-that display registry configuration.
+optional `watcher_registry` address, and the optional `pending_admin` address
+of an unexpired pending admin transfer. This is the preferred read for
+dashboards that display registry configuration.
 
 **Returns:** `Result<Address, ContractError>`
 
 **Errors:** `NotInitialized` if `initialize` has not been called.
+
+---
+
+### `get_pending_admin_transfer`
+
+Returns `Option<Address>`: the address named by an unexpired pending admin
+transfer proposal, or `None` if no transfer is pending or the proposal has
+expired (see `ADMIN_TRANSFER_EXPIRY_LEDGERS`). Read-only; no auth required.
 
 ---
 
@@ -275,7 +284,7 @@ Removes any alert config by ID. Requires admin auth.
 
 Deactivates any alert by ID without deleting its record. Unlike `remove_alert_by_admin`, the alert config and its owner/contract indexes are left intact — only the `active` flag is cleared — so an admin can moderate a single problematic alert (spam, abuse report) while preserving its history. Admin only.
 
-The alert is also **suspended** (`DataKey::AdminSuspended(id)`): the owner cannot reactivate it with `update_alert(..., active = true)` (`AlertSuspended`) until an admin calls `unlock_alert_by_admin`. The suspension stays with the alert if ownership is transferred and is cleared when the alert is removed (#202).
+The alert is also **suspended** (`DataKey::AdminSuspended(id)`): the owner cannot reactivate it with `update_alert(..., active = true)` (`AlertSuspended`) until an admin calls `unlock_alert_by_admin`. Suspending an alert that is already suspended does nothing. The suspension stays with the alert if ownership is transferred and is cleared when the alert is removed (#202).
 
 **Requires auth:** `admin`
 
@@ -290,7 +299,7 @@ The alert is also **suspended** (`DataKey::AdminSuspended(id)`): the owner canno
 
 **Errors:** Returns `ContractError::AlertNotFound` if ID does not exist; `ContractError::Unauthorized` if caller is not the admin.
 
-**Events:** Emits `(Symbol("alert"), Symbol("admin_off"))` with data `(id: u64, admin: Address)`.
+**Events:** Emits `(Symbol("alert"), Symbol("admin_off"))` with data `(id: u64, admin: Address)` when a suspension was applied.
 
 ---
 
@@ -302,7 +311,7 @@ The alert is also **suspended** (`DataKey::AdminSuspended(id)`): the owner canno
 
 **Events:** `(Symbol("alert"), Symbol("admin_on"))` with data `(id: u64, admin: Address)` when a suspension was lifted.
 
-`is_alert_suspended(config_id) -> bool` reports whether an alert is currently suspended.
+`is_alert_suspended(config_id) -> bool` reports whether an alert is currently suspended. It is public metadata: it is **not** subject to watcher-gating and can be called by anyone for any alert ID.
 ### `deactivate_all_alerts`
 
 Deactivates every active alert owned by `caller` in one call, leaving the records and indexes in place (same effect as `update_alert(..., active = false)` on each). Expired or already-removed entries are skipped.
@@ -353,7 +362,9 @@ Removes IDs from `owner`'s index whose alert record no longer exists (expired in
 |---|---|---|
 | `owner` | `Address` | Owner whose index is cleaned up |
 
-**Returns:** `u32` — the number of dangling IDs removed
+**Returns:** `u32` — the number of dangling IDs removed in this pass
+
+Each call examines at most `MAX_PRUNE_PER_CALL` (50) index entries, resuming from a stored `PruneCursor`, like `deactivate_all_alerts`. `get_prune_cursor(owner) -> Option<u32>` returns `Some(_)` while a scan is still in progress; call `prune_expired_alerts` again until it returns `None`.
 
 **Events:** Emits `(Symbol("alert"), Symbol("pruned"))` with data `(owner: Address, count: u32)` when at least one ID was removed.
 
@@ -393,7 +404,7 @@ Ownership moves in two steps so nobody can be made the owner of alerts they did 
 | `accept_alert_transfer(new_owner, config_id)` | `new_owner` (named recipient) | Moves the alert to `new_owner`: updates `owner`, migrates the owner index and live counter, clears the proposal. | `AlertNotFound`, `NoPendingTransfer`, `Unauthorized` (not the named recipient), `TransferExpired`, `OwnerAlertLimitExceeded` (recipient already at the per-owner limit, #200), `Paused` |
 | `reject_alert_transfer(new_owner, config_id)` | `new_owner` (named recipient) | Clears the proposal; the alert stays with its owner. | `NoPendingTransfer`, `Unauthorized` |
 | `cancel_alert_transfer(caller, config_id)` | `caller` (current owner) | Clears the proposal. | `AlertNotFound`, `Unauthorized`, `NoPendingTransfer` |
-| `get_pending_alert_transfer(config_id)` | none | Returns `Option<PendingAlertTransfer>`. An expired proposal is still returned (compare `expires_at_ledger` with the current ledger); it can only be cancelled or replaced. | — |
+| `get_pending_alert_transfer(config_id)` | none | Public metadata, **not** subject to watcher-gating: anyone can read the proposed recipient and expiry for any alert ID. Returns `Option<PendingAlertTransfer>`. An expired proposal is still returned (compare `expires_at_ledger` with the current ledger); it can only be cancelled or replaced. | — |
 
 A transfer can be accepted up to and including ledger `expires_at_ledger`. Accepting counts against the recipient's per-owner limit exactly like registering, so the limit is checked at acceptance (the recipient's count may change after the proposal).
 
@@ -535,7 +546,9 @@ If a `WatcherRegistry` is configured, `querier` must be a registered watcher or 
 
 ### `get_alert_ids_by_owner`
 
-Returns the raw list of alert IDs owned by a given address — a thin wrapper over the underlying `OwnerIndex` entry. Use this instead of `get_alerts_by_owner` when only the IDs are needed (e.g. an existence check or count), avoiding the cost of deserializing every full `AlertConfig`.
+Returns the **live** alert IDs owned by a given address. Use this instead of `get_alerts_by_owner` when only the IDs are needed (e.g. an existence check or count), avoiding the cost of deserializing every full `AlertConfig`.
+
+Only IDs whose record still exists are returned. The underlying `OwnerIndex` keeps dangling IDs until a prune runs, and returning them here would make an existence check or a count lie (see #383). For the number of live alerts, prefer `get_non_removed_alert_count`, which reads a counter instead of filtering this list.
 
 Unlike `get_alerts_by_owner`, this is **not** subject to watcher-gating, since it exposes no alert content.
 
@@ -655,6 +668,8 @@ Extends the TTL of an alert and its index entries without modifying any data. Th
 
 **Errors:** `AlertNotFound` if ID does not exist; `Unauthorized` if caller is not the owner.
 
+`renew_alert_ttl` always extends to `DEFAULT_TTL`. To renew for longer, use `renew_alert_ttl_for(caller, config_id, ttl)`: same auth and effects, but it extends to `ttl` ledgers, which must be between `DEFAULT_TTL` and `MAX_TTL` (otherwise `InvalidTtl`).
+
 ---
 
 ### `get_contract_alerts_paginated`
@@ -671,6 +686,27 @@ If a `WatcherRegistry` is configured, `querier` must be a registered watcher or 
 | `target_contract` | `Address` | Contract address to query |
 | `offset` | `u32` | Number of results to skip |
 | `limit` | `u32` | Maximum number of results to return |
+
+**Returns:** `Result<Vec<AlertConfig>, ContractError>` — may be empty.
+
+---
+
+### `get_active_contract_alerts_paged`
+
+Returns a page of **active** alert configs registered for a given target contract — the bounded replacement for `get_active_alerts_for_contract` (#384). Only the `[offset, offset + limit)` window of the contract index is walked, so the cost does not grow with the whole registry.
+
+`offset` and `limit` count index slots rather than matches, so paging stays deterministic even when most slots are inactive: advance `offset` by `limit` until the returned vec is shorter than `limit`. `limit` is clamped to the maximum page size.
+
+If a `WatcherRegistry` is configured, `querier` must be a registered watcher or the call returns `ContractError::NotAWatcher`.
+
+**Parameters**
+
+| Name | Type | Description |
+|---|---|---|
+| `querier` | `Address` | Address performing the query |
+| `target_contract` | `Address` | Contract address to query |
+| `offset` | `u32` | Number of index slots to skip |
+| `limit` | `u32` | Maximum number of index slots to scan (clamped) |
 
 **Returns:** `Result<Vec<AlertConfig>, ContractError>` — may be empty.
 
@@ -843,9 +879,9 @@ This includes admin moderation (`deactivate_alert_by_admin`, `unlock_alert_by_ad
 | `AlreadyInitialized` | 3 | `initialize` was called more than once |
 | `NotInitialized` | 4 | Admin function called before `initialize` |
 | `NotAWatcher` | 5 | Watcher-gating is enabled and `querier` is not a registered watcher |
-| `InvalidWebhookHash` | 6 | No longer returned: webhook hashes are `BytesN<32>`, so a wrong length cannot be constructed. Kept so the code is never reused. |
+| `InvalidWebhookHash` | 6 | `register_alert`, `update_webhook` or `propose_webhook` called with the all-zero webhook hash (never the SHA-256 of a URL). Wrong lengths cannot occur: hashes are `BytesN<32>`. |
 | `LabelTooLong` | 7 | `label` exceeds 128 bytes |
-| `TooManyRules` | 8 | `rules` exceeds the 50-rule maximum |
+| `TooManyRules` | 8 | `rules` exceeds `MAX_RULES_PER_ALERT` (`VALID_RULE_DESCRIPTORS.len()`, currently 2) |
 | `InvalidRuleDescriptor` | 9 | A rule is not a recognised descriptor (`rule:transfer`, `rule:mint`) |
 | `OwnerAlertLimitExceeded` | 10 | Owner is at the configured per-owner active alert limit |
 | `DuplicateAlertId` | 11 | Internal invariant violation — an ID was already present in an index |
@@ -860,7 +896,10 @@ This includes admin moderation (`deactivate_alert_by_admin`, `unlock_alert_by_ad
 | `InvalidTransferRecipient` | 20 | `propose_alert_transfer` named the current owner as the recipient |
 | `AlertSuspended` | 21 | `update_alert` tried to reactivate an alert suspended by `deactivate_alert_by_admin` |
 | `EmptyLabel` | 22 | `label` is empty |
+| `EmptyRules` | 25 | `register_alert`, `update_alert` or `batch_register_alert` called with an empty `rules` list |
 | `NoopWebhookRotation` | 23 | `propose_webhook` called with a hash that is already live or already pending |
+| `InvalidTtl` | 26 | `bump_alert` called with a TTL below `DEFAULT_TTL`, or `renew_alert_ttl_for` called with a TTL outside `DEFAULT_TTL..=MAX_TTL` |
+| `AdminTransferExpired` | 24 | `accept_admin_transfer` called after the proposal's `ADMIN_TRANSFER_EXPIRY_LEDGERS` (120,960 ledgers) have elapsed |
 
 ---
 

@@ -166,6 +166,7 @@ Hands the admin role to a new address in two steps, replacing the **entire** adm
 **Errors:**
 
 - `NoPendingTransfer` if no transfer is pending, or the pending proposal names a different address.
+- `AdminTransferExpired` if more than `ADMIN_TRANSFER_EXPIRY_LEDGERS` (120,960) ledgers have passed since the proposal.
 - `Paused` if the contract is paused.
 
 #### `cancel_admin_transfer`
@@ -521,6 +522,7 @@ The contract defines a single error enum ([`lib.rs`](../contracts/watcher-regist
 | `WatcherNotFound` | `5` | `replace_watcher` | `old_watcher` is not currently registered, so there is nothing to replace. |
 | `DelayTooLarge` | `12` | `set_timelock_delay`, `propose_admin_action` | Configured or proposed timelock delay exceeds `MAX_TIMELOCK_DELAY` (518,400 ledgers ≈ 30 days). |
 | `NoPendingTransfer` | `6` | `accept_admin_transfer`, `cancel_admin_transfer` | No admin transfer is pending, or the pending proposal names a different address. |
+| `AdminTransferExpired` | `16` | `accept_admin_transfer` | The pending admin transfer was proposed more than `ADMIN_TRANSFER_EXPIRY_LEDGERS` ledgers ago. |
 | `Paused` | `14` | admin and watcher mutations (`add_admin`, `remove_admin`, `accept_admin_transfer`, `register_watcher`, `remove_watcher`, `replace_watcher`, `clear_all_watchers`, …) | The contract is paused; an admin must call `unpause` first. |
 | `MaxWatchersReached` | `7` | `register_watcher` | Registering would exceed `MAX_WATCHERS`. |
 | `BelowMinWatchers` | `15` | `remove_watcher`, `clear_all_watchers` | The operation would drop the watcher count below `MIN_WATCHERS`. |
@@ -575,7 +577,7 @@ All state is stored in **instance storage**, addressed by the `DataKey` enum plu
 |---|---|---|
 | `DataKey::Admins` | `Vec<Address>` | Current admin set |
 | `DataKey::Watchers` | `Vec<Address>` | Authorized watcher addresses |
-| `DataKey::PendingAdminTransfer` | `Address` | Address awaiting `accept_admin_transfer` |
+| `DataKey::PendingAdminTransfer` | `(Address, u32)` | `(new_admin, expires_at_ledger)` awaiting `accept_admin_transfer` |
 | `DataKey::TimelockDelay` | `u32` | Timelock delay in ledgers (`0`/absent = disabled) |
 | `DataKey::PendingAction` | `PendingAction` | Queued timelocked admin action |
 | `DataKey::Paused` | `bool` | Pause flag |

@@ -40,6 +40,9 @@ jobs:
           toolchain: ${{ steps.rust.outputs.channel }}
           targets: wasm32-unknown-unknown
 
+      - name: Run test suite verification
+        run: cargo test --workspace --locked
+
       # Issue #285 — Pin Stellar CLI version
       - name: Install Stellar CLI
         env:
@@ -63,17 +66,11 @@ jobs:
         id: deploy
         env:
           STELLAR_IDENTITY: deployer
+        run: bash scripts/deploy.sh
         run: |
           OUTPUT=$(bash scripts/deploy.sh 2>&1)
           echo "$OUTPUT"
-          ALERT_ID=$(echo "$OUTPUT" | grep "Alert Registry deployed:" | awk '{print $NF}')
-          WATCHER_ID=$(echo "$OUTPUT" | grep "Watcher Registry deployed:" | awk '{print $NF}')
-          ALERT_HASH=$(echo "$OUTPUT" | grep "Alert Registry:" | tail -1 | awk '{print $NF}')
-          WATCHER_HASH=$(echo "$OUTPUT" | grep "Watcher Registry:" | tail -1 | awk '{print $NF}')
-          echo "alert_id=$ALERT_ID" >> "$GITHUB_OUTPUT"
-          echo "watcher_id=$WATCHER_ID" >> "$GITHUB_OUTPUT"
-          echo "alert_hash=$ALERT_HASH" >> "$GITHUB_OUTPUT"
-          echo "watcher_hash=$WATCHER_HASH" >> "$GITHUB_OUTPUT"
+          python3 scripts/deployment_outputs.py <<< "$OUTPUT" >> "$GITHUB_OUTPUT"
 
       # Issue #289 — Use update_deployments.py to update DEPLOYMENTS.md
       - name: Update DEPLOYMENTS.md
@@ -84,6 +81,7 @@ jobs:
             --watcher-id "${{ steps.deploy.outputs.watcher_id }}" \
             --alert-hash "${{ steps.deploy.outputs.alert_hash }}" \
             --watcher-hash "${{ steps.deploy.outputs.watcher_hash }}" \
+            --cli-version "v28.0.0" \
             --tag "${{ github.ref_name }}"
 
       - name: Create Pull Request with updated DEPLOYMENTS.md
