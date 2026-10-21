@@ -46,11 +46,9 @@ WATCHER_CONTRACT_ID ?= $(CONTRACT_ID)
 bindings: bindings-watcher
 
 bindings-watcher: build
-	stellar contract bindings typescript \
-		--wasm target/wasm32-unknown-unknown/release/watcher_registry.wasm \
-		--contract-id $(WATCHER_CONTRACT_ID) \
-		--output-dir bindings/watcher-registry \
-		--overwrite
+	bash scripts/generate-watcher-bindings.sh \
+		target/wasm32-unknown-unknown/release/watcher_registry.wasm \
+		"$(WATCHER_CONTRACT_ID)"
 	cd bindings/watcher-registry && npm install && npm run build
 
 # The alert package generates into its own dist/ (see its package.json), so

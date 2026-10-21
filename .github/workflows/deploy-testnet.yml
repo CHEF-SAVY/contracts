@@ -40,6 +40,9 @@ jobs:
           toolchain: ${{ steps.rust.outputs.channel }}
           targets: wasm32-unknown-unknown
 
+      - name: Run test suite verification
+        run: cargo test --workspace --locked
+
       # Issue #285 — Pin Stellar CLI version
       - name: Install Stellar CLI
         env:
@@ -64,6 +67,10 @@ jobs:
         env:
           STELLAR_IDENTITY: deployer
         run: bash scripts/deploy.sh
+        run: |
+          OUTPUT=$(bash scripts/deploy.sh 2>&1)
+          echo "$OUTPUT"
+          python3 scripts/deployment_outputs.py <<< "$OUTPUT" >> "$GITHUB_OUTPUT"
 
       # Issue #289 — Use update_deployments.py to update DEPLOYMENTS.md
       - name: Update DEPLOYMENTS.md
@@ -74,6 +81,7 @@ jobs:
             --watcher-id "${{ steps.deploy.outputs.watcher_id }}" \
             --alert-hash "${{ steps.deploy.outputs.alert_hash }}" \
             --watcher-hash "${{ steps.deploy.outputs.watcher_hash }}" \
+            --cli-version "v28.0.0" \
             --tag "${{ github.ref_name }}"
 
       - name: Create Pull Request with updated DEPLOYMENTS.md
