@@ -24,6 +24,7 @@ This applies to:
 - `DataKey::ContractIndex(address)` — per-contract alert ID lists
 - `DataKey::ContractLiveCount(address)` — per-contract live alert count
 - `DataKey::DeactivationCursor(address)` — resume point for a bulk deactivation
+- `DataKey::PruneCursor(address)` — resume point for an expired-alert prune
 
 The exception is `DataKey::PendingTransfer(id)`, which uses
 `ALERT_TRANSFER_EXPIRY_LEDGERS` (see [Non-Default TTLs](#non-default-ttls)).
@@ -40,7 +41,9 @@ Only these paths write a TTL other than `DEFAULT_TTL`:
 | Entry | TTL (ledgers) | Wall-clock | Set by |
 |-------|---------------|------------|--------|
 | `PendingTransfer(id)` | `ALERT_TRANSFER_EXPIRY_LEDGERS` = 120 960 | ~7 days | `propose_alert_transfer` |
-| `Alert`, `AlertActive`, `OwnerIndex`, `ContractIndex` (and the other alert-dependent entries) | Requested, capped at `MAX_TTL` = 535 680 | up to ~31 days | `bump_alert` |
+| `Alert`, `AlertActive`, `OwnerIndex`, `ContractIndex` (and the other alert-dependent entries) | Requested, capped at `MAX_TTL` = 535 680 (at least `DEFAULT_TTL`; smaller values are rejected with `InvalidTtl`) | up to ~31 days | `bump_alert` (anyone) |
+| The same alert-dependent entries | Requested, between `DEFAULT_TTL` and `MAX_TTL` | up to ~31 days | `renew_alert_ttl_for` (owner only) |
+| The same alert-dependent entries | at least `ALERT_TRANSFER_EXPIRY_LEDGERS` = 120 960 | ~7 days | `propose_alert_transfer`, so the alert cannot expire while the transfer is open |
 | Instance entry (both registries) | `INSTANCE_BUMP_AMOUNT` = 535 680 | ~31 days | `bump_instance_ttl` |
 
 `PendingTransfer` is written only by `propose_alert_transfer` and is not

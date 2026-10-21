@@ -26,5 +26,6 @@ mod tests {
         assert_eq!(ContractError::MaxAdminsReached as u32, 8);
         assert_eq!(ContractError::ActionAlreadyPending as u32, 9);
         assert_eq!(ContractError::NoPendingAction as u32, 10);
+        assert_eq!(ContractError::AdminTransferExpired as u32, 16);
     }
 }

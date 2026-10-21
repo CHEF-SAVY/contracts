@@ -1,3 +1,7 @@
+// The unpaginated getters are deprecated (#384) but still part of the
+// contract ABI; these tests pin their behaviour until they are removed.
+#![allow(deprecated)]
+
 use crate::AlertRegistry;
 use crate::AlertRegistryClient;
 use crate::ContractError;
@@ -971,6 +975,100 @@ fn test_regression_prune_expired_alerts() {
 
 // ── #199: retargeting respects the per-contract limit ────────────────────────
 
+/// Regression test for #385: `get_active_alert_count` used to scan the owner's
+/// whole index on every call, which is unbounded work. It now reads a counter
+/// that every mutator keeps in step, so the value must track registration,
+/// activation toggles, admin suspension, removal, and bulk deactivation exactly.
+#[test]
+fn test_regression_get_active_alert_count_tracks_mutations() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let owner = Address::generate(&env);
+
+    let a = register(&env, &client, &owner, "A");
+    let b = register(&env, &client, &owner, "B");
+    assert_eq!(client.get_active_alert_count(&owner), 2);
+    assert_eq!(client.get_non_removed_alert_count(&owner), 2);
+
+    // A toggle is reflected without a rescan.
+    client.set_alert_active(&owner, &a, &false);
+    assert_eq!(client.get_active_alert_count(&owner), 1);
+    // A redundant toggle must not skew the counter.
+    client.set_alert_active(&owner, &a, &false);
+    assert_eq!(client.get_active_alert_count(&owner), 1);
+    client.set_alert_active(&owner, &a, &true);
+    assert_eq!(client.get_active_alert_count(&owner), 2);
+
+    // A rules rewrite that flips `active` counts too.
+    client.update_alert(&owner, &b, &vec![&env, str(&env, "rule:transfer")], &false);
+    assert_eq!(client.get_active_alert_count(&owner), 1);
+
+    // Admin suspension drops the alert from the active count.
+    client.deactivate_alert_by_admin(&admin, &a);
+    assert_eq!(client.get_active_alert_count(&owner), 0);
+
+    // Removal keeps it at zero.
+    client.remove_alert(&owner, &b);
+    assert_eq!(client.get_active_alert_count(&owner), 0);
+
+    // Bulk deactivation adjusts once per pass.
+    register(&env, &client, &owner, "C");
+    register(&env, &client, &owner, "D");
+    assert_eq!(client.get_active_alert_count(&owner), 2);
+    assert_eq!(client.deactivate_all_alerts(&owner), 2);
+    assert_eq!(client.get_active_alert_count(&owner), 0);
+}
+
+/// Regression test for #385 (transfer path): moving an active alert between
+/// owners must migrate the active counter so neither owner's count drifts.
+#[test]
+fn test_regression_active_count_follows_transfer() {
+    let (env, client, owner, _target, id) = transfer_fixture();
+    let recipient = Address::generate(&env);
+
+    assert_eq!(client.get_active_alert_count(&owner), 1);
+
+    client.propose_alert_transfer(&owner, &id, &recipient);
+    client.accept_alert_transfer(&recipient, &id);
+
+    assert_eq!(client.get_active_alert_count(&owner), 0);
+    assert_eq!(client.get_active_alert_count(&recipient), 1);
+/// Regression test for #383: `get_alert_ids_by_owner` returned the raw owner
+/// index, so an ID whose record had already been removed was still reported as
+/// if the alert existed. It now filters out those dangling IDs.
+#[test]
+fn test_regression_get_alert_ids_by_owner_filters_dangling() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    let keep = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Keep"),
+        &hash64(&env),
+        &vec![&env, str(&env, "rule:transfer")],
+    );
+    let remove = client.register_alert(
+        &owner,
+        &Address::generate(&env),
+        &str(&env, "Remove"),
+        &hash64c(&env, '1'),
+        &vec![&env, str(&env, "rule:mint")],
+    );
+
+    assert_eq!(client.get_alert_ids_by_owner(&owner).len(), 2);
+    client.remove_alert(&owner, &remove);
+
+    let ids = client.get_alert_ids_by_owner(&owner);
+    assert_eq!(ids.len(), 1, "removed alert must not be reported as live");
+    assert_eq!(ids.get(0).unwrap(), keep);
+    // The live-counter path agrees with the filtered list.
+    assert_eq!(client.get_non_removed_alert_count(&owner), 1);
+}
+
+// ── #199: retargeting respects the per-contract limit ────────────────────────
+
 /// Regression test for #199: `update_target_contract` used to move an alert
 /// into any contract's index without checking the per-contract limit, so
 /// alerts registered against throwaway targets could all be retargeted at one
@@ -1112,6 +1210,37 @@ fn test_regression_owner_cannot_undo_admin_deactivation() {
 
 #[test]
 fn test_regression_admin_suspension_follows_the_alert() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let owner = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+    let rules = vec![&env, str(&env, "rule:transfer")];
+    let id = client.register_alert(
+        &owner,
+        &Address::generate(&env),
+        &str(&env, "Spam"),
+        &hash64(&env),
+        &rules,
+    );
+    client.deactivate_alert_by_admin(&admin, &id);
+
+    // Handing the alert to another account does not escape the suspension.
+    client.propose_alert_transfer(&owner, &id, &new_owner);
+    client.accept_alert_transfer(&new_owner, &id);
+    assert_eq!(
+        client
+            .try_update_alert(&new_owner, &id, &rules, &true)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::AlertSuspended
+    );
+
+    // Removing the alert clears the flag with it.
+    client.remove_alert(&new_owner, &id);
+    assert!(!client.is_alert_suspended(&id));
+}
+
 /// Regression test for #204:
 /// `deactivate_all_alerts` returned a plain `0` while paused, which callers
 /// could not tell apart from "owner had no active alerts". It now returns
@@ -1637,4 +1766,511 @@ fn test_regression_instance_keys_match_legacy_symbols() {
     assert_eq!(client.get_alert_count(), 7);
     assert_eq!(client.get_per_owner_alert_limit(), 3);
     assert!(client.is_paused());
+}
+
+/// Regression test for #379:
+/// `deactivate_alert_by_admin` on an already-suspended alert is a no-op that
+/// does not rewrite the alert, bump `updated_ledger`, or emit `alert.admin_off`.
+#[test]
+fn test_regression_deactivate_alert_by_admin_is_idempotent() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    let id = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Spam"),
+        &hash64(&env),
+        &vec![&env, str(&env, "rule:transfer")],
+    );
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1_000;
+        li.sequence_number = 10;
+    });
+    client.deactivate_alert_by_admin(&admin, &id);
+    assert!(client.is_alert_suspended(&id));
+    let first = client.get_alert(&owner, &id).unwrap();
+    assert!(!first.active);
+    assert_eq!(first.updated_at, 1_000);
+    assert_eq!(first.updated_ledger, 10);
+    assert_eq!(env.events().all().len(), 1);
+
+    // Calling deactivate_alert_by_admin again while suspended is a silent no-op.
+    env.ledger().with_mut(|li| {
+        li.timestamp = 2_000;
+        li.sequence_number = 20;
+    });
+    client.deactivate_alert_by_admin(&admin, &id);
+    assert!(client.is_alert_suspended(&id));
+    let second = client.get_alert(&owner, &id).unwrap();
+    assert_eq!(second.updated_at, 1_000);
+    assert_eq!(second.updated_ledger, 10);
+    assert!(env.events().all().is_empty());
+
+    // After unlocking, suspending again applies the suspension and emits an event.
+    client.unlock_alert_by_admin(&admin, &id);
+    env.ledger().with_mut(|li| {
+        li.timestamp = 3_000;
+        li.sequence_number = 30;
+    });
+    client.deactivate_alert_by_admin(&admin, &id);
+    assert!(client.is_alert_suspended(&id));
+    let third = client.get_alert(&owner, &id).unwrap();
+    assert_eq!(third.updated_at, 3_000);
+    assert_eq!(third.updated_ledger, 30);
+    assert_eq!(env.events().all().len(), 1);
+fn alert_ttl(env: &Env, client: &AlertRegistryClient, id: u64) -> u32 {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    env.as_contract(&client.address, || {
+        env.storage().persistent().get_ttl(&crate::DataKey::Alert(id))
+    })
+}
+
+/// Regression test for #371: proposing a transfer extends the alert to at
+/// least the transfer window, so the recipient can still accept on day 6.
+#[test]
+fn test_regression_alert_outlives_open_transfer_window() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+    let id = register(&env, &client, &owner, "A");
+    assert!(alert_ttl(&env, &client, id) < crate::ALERT_TRANSFER_EXPIRY_LEDGERS);
+
+    client.propose_alert_transfer(&owner, &id, &new_owner);
+    assert!(alert_ttl(&env, &client, id) >= crate::ALERT_TRANSFER_EXPIRY_LEDGERS);
+
+    // Day 6 (17,280 ledgers per day): the alert must still be live and acceptable.
+    env.ledger().with_mut(|li| li.sequence_number += 6 * 17_280);
+    assert!(alert_ttl(&env, &client, id) >= crate::ALERT_TRANSFER_EXPIRY_LEDGERS - 6 * 17_280);
+    client.accept_alert_transfer(&new_owner, &id);
+    assert_eq!(client.get_alert(&new_owner, &id).unwrap().owner, new_owner);
+}
+
+/// Regression test for #372: owners can renew for a chosen TTL up to MAX_TTL.
+#[test]
+fn test_regression_renew_alert_ttl_for_extends_to_requested_ttl() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let id = register(&env, &client, &owner, "A");
+
+    client.renew_alert_ttl_for(&owner, &id, &crate::MAX_TTL);
+    assert_eq!(alert_ttl(&env, &client, id), crate::MAX_TTL);
+
+    assert_eq!(
+        client
+            .try_renew_alert_ttl_for(&Address::generate(&env), &id, &crate::MAX_TTL)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::Unauthorized
+    );
+    for bad in [0, crate::DEFAULT_TTL - 1, crate::MAX_TTL + 1] {
+        assert_eq!(
+            client
+                .try_renew_alert_ttl_for(&owner, &id, &bad)
+                .unwrap_err()
+                .unwrap(),
+            ContractError::InvalidTtl
+        );
+    }
+}
+
+/// Regression test for #373: `bump_alert` rejects TTLs below DEFAULT_TTL and
+/// emits no event for them.
+#[test]
+fn test_regression_bump_alert_rejects_ttl_below_default() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let id = register(&env, &client, &owner, "A");
+
+    for bad in [0, 1, crate::DEFAULT_TTL - 1] {
+        assert_eq!(
+            client.try_bump_alert(&id, &bad).unwrap_err().unwrap(),
+            ContractError::InvalidTtl
+        );
+        assert!(
+            env.events().all().is_empty(),
+            "a rejected bump must not emit alert.bump"
+        );
+    }
+    client.bump_alert(&id, &crate::DEFAULT_TTL);
+}
+
+/// Regression test for #374: pruning examines at most MAX_PRUNE_PER_CALL
+/// entries per call and resumes from a cursor, in a single pass.
+#[test]
+fn test_regression_prune_expired_alerts_is_bounded_and_resumable() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let total = crate::MAX_PRUNE_PER_CALL * 3 + 7;
+    for _ in 0..total {
+        let id = register(&env, &client, &owner, "A");
+        expire_alert_record(&env, &client, id);
+    }
+
+    let mut removed_total = 0;
+    let mut passes = 0;
+    loop {
+        let removed = client.prune_expired_alerts(&owner);
+        assert!(removed <= crate::MAX_PRUNE_PER_CALL, "a pass must be bounded");
+        removed_total += removed;
+        passes += 1;
+        if client.get_prune_cursor(&owner).is_none() {
+            break;
+        }
+    }
+    assert_eq!(removed_total, total);
+    assert_eq!(passes, 4);
+    assert_eq!(client.get_non_removed_alert_count(&owner), 0);
+    assert_eq!(client.get_alert_ids_by_owner(&owner).len(), 0);
+/// Regression test for #378: `set_alert_active` to the current state is a
+/// no-op: no storage rewrite (`updated_ledger` unchanged) and no event.
+#[test]
+fn test_regression_set_alert_active_is_noop_when_state_unchanged() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let id = register(&env, &client, &owner, "A");
+    let before = client.get_alert(&owner, &id).unwrap();
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 10;
+        li.timestamp += 100;
+    });
+    client.set_alert_active(&owner, &id, &true);
+
+    let after = client.get_alert(&owner, &id).unwrap();
+    assert_eq!(after.updated_at, before.updated_at);
+    assert_eq!(after.updated_ledger, before.updated_ledger);
+    assert!(
+        env.events().all().is_empty(),
+        "a no-op transition must not emit alert.update"
+    );
+
+    // A real transition still updates and emits.
+    client.set_alert_active(&owner, &id, &false);
+    let toggled = client.get_alert(&owner, &id).unwrap();
+    assert!(!toggled.active);
+    assert!(toggled.updated_ledger > before.updated_ledger);
+}
+
+/// Regression test for #377: the all-zero webhook hash is rejected by
+/// `register_alert`, `update_webhook` and `propose_webhook`.
+#[test]
+fn test_regression_all_zero_webhook_hash_is_rejected() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let zero = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+
+    assert_eq!(
+        client
+            .try_register_alert(
+                &owner,
+                &Address::generate(&env),
+                &str(&env, "A"),
+                &zero,
+                &vec![&env, str(&env, "rule:transfer")],
+            )
+            .unwrap_err()
+            .unwrap(),
+        ContractError::InvalidWebhookHash
+    );
+
+    let id = register(&env, &client, &owner, "A");
+    assert_eq!(
+        client
+            .try_update_webhook(&owner, &id, &zero)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::InvalidWebhookHash
+    );
+    assert_eq!(
+        client
+            .try_propose_webhook(&owner, &id, &zero)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::InvalidWebhookHash
+    );
+}
+
+/// Regression test for #376: an empty `rules` list is rejected by
+/// `register_alert`, `update_alert` and `batch_register_alert`.
+#[test]
+fn test_regression_empty_rules_are_rejected() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    assert_eq!(
+        client
+            .try_register_alert(&owner, &target, &str(&env, "A"), &hash64(&env), &vec![&env])
+            .unwrap_err()
+            .unwrap(),
+        ContractError::EmptyRules
+    );
+
+    let id = register(&env, &client, &owner, "A");
+    assert_eq!(
+        client
+            .try_update_alert(&owner, &id, &vec![&env], &true)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::EmptyRules
+    );
+
+    let input = crate::AlertInput {
+        owner: owner.clone(),
+        target_contract: target,
+        label: str(&env, "B"),
+        webhook_hash: hash64(&env),
+        rules: vec![&env],
+    };
+    assert_eq!(
+        client
+            .try_batch_register_alert(&vec![&env, input])
+            .unwrap_err()
+            .unwrap(),
+        ContractError::EmptyRules
+    );
+fn last_admin_event(env: &Env, name: Symbol) -> soroban_sdk::Val {
+    let events = env.events().all();
+    let (_, _, data) = events
+        .iter()
+        .rev()
+        .find(|(_, topics, _)| {
+            topics.len() == 2
+                && Symbol::from_val(env, &topics.get(0).unwrap()) == symbol_short!("admin")
+                && Symbol::from_val(env, &topics.get(1).unwrap()) == name
+        })
+        .expect("admin event must be emitted");
+    data
+}
+
+/// Regression test for #367: `accept_admin_transfer` emits `admin.transfer`
+/// as `(old_admin, new_admin)`, the same shape as `transfer_admin`, and
+/// `cancel_admin_transfer` emits a tuple `(admin,)`.
+#[test]
+fn test_regression_admin_transfer_event_payload_shapes() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.propose_admin_transfer(&admin, &new_admin);
+    client.cancel_admin_transfer(&admin);
+    let (cancelled_by,): (Address,) =
+        FromVal::from_val(&env, &last_admin_event(&env, symbol_short!("cancel")));
+    assert_eq!(cancelled_by, admin);
+
+    client.propose_admin_transfer(&admin, &new_admin);
+    client.accept_admin_transfer(&new_admin);
+    let (old, new): (Address, Address) =
+        FromVal::from_val(&env, &last_admin_event(&env, symbol_short!("transfer")));
+    assert_eq!((old, new), (admin.clone(), new_admin.clone()));
+
+    let third = Address::generate(&env);
+    client.transfer_admin(&new_admin, &third);
+    let (old, new): (Address, Address) =
+        FromVal::from_val(&env, &last_admin_event(&env, symbol_short!("transfer")));
+    assert_eq!((old, new), (new_admin, third));
+}
+
+/// Regression test for #368: the constructor and the admin-transfer paths
+/// extend the instance TTL, so a fresh registry starts on the documented
+/// 31-day lifetime rather than the network default.
+#[test]
+fn test_regression_constructor_and_admin_transfer_extend_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (admin.clone(),));
+    let client = AlertRegistryClient::new(&env, &contract_id);
+    assert_eq!(instance_ttl(&env, &client), crate::INSTANCE_BUMP_AMOUNT);
+
+    let new_admin = Address::generate(&env);
+    for step in 0..3 {
+        advance_ledgers(&env, crate::INSTANCE_BUMP_AMOUNT - crate::INSTANCE_BUMP_THRESHOLD + 1);
+        match step {
+            0 => client.propose_admin_transfer(&admin, &new_admin),
+            1 => client.cancel_admin_transfer(&admin),
+            _ => {
+                client.propose_admin_transfer(&admin, &new_admin);
+                advance_ledgers(&env, crate::INSTANCE_BUMP_AMOUNT - crate::INSTANCE_BUMP_THRESHOLD + 1);
+                client.accept_admin_transfer(&new_admin);
+            }
+        }
+        assert_eq!(instance_ttl(&env, &client), crate::INSTANCE_BUMP_AMOUNT);
+    }
+}
+
+/// Regression test for #369: the pending admin transfer is readable through
+/// `get_pending_admin_transfer` and `get_configuration().pending_admin`.
+#[test]
+fn test_regression_pending_admin_transfer_is_exposed() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert_eq!(client.get_pending_admin_transfer(), None);
+    assert_eq!(client.get_configuration().pending_admin, None);
+
+    client.propose_admin_transfer(&admin, &new_admin);
+    assert_eq!(client.get_pending_admin_transfer(), Some(new_admin.clone()));
+    assert_eq!(client.get_configuration().pending_admin, Some(new_admin.clone()));
+
+    client.accept_admin_transfer(&new_admin);
+    assert_eq!(client.get_pending_admin_transfer(), None);
+    assert_eq!(client.get_configuration().pending_admin, None);
+}
+
+/// Regression test for #370: an admin transfer proposal cannot be accepted
+/// after `ADMIN_TRANSFER_EXPIRY_LEDGERS`, and is no longer reported as pending.
+#[test]
+fn test_regression_admin_transfer_proposal_expires() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    client.initialize(&admin);
+    client.propose_admin_transfer(&admin, &new_admin);
+
+    // Still acceptable on the last valid ledger.
+    advance_ledgers(&env, crate::ADMIN_TRANSFER_EXPIRY_LEDGERS);
+    assert_eq!(client.get_pending_admin_transfer(), Some(new_admin.clone()));
+
+    advance_ledgers(&env, 1);
+    assert_eq!(client.get_pending_admin_transfer(), None);
+    assert_eq!(
+        client
+            .try_accept_admin_transfer(&new_admin)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::AdminTransferExpired
+    );
+    assert_eq!(client.get_admin(), admin);
+
+    // The expired proposal can be replaced by a fresh one.
+    client.propose_admin_transfer(&admin, &new_admin);
+    client.accept_admin_transfer(&new_admin);
+    assert_eq!(client.get_admin(), new_admin);
+/// Regression test for #366: `accept_admin_transfer` must be blocked while
+/// paused so a pending admin cannot complete a takeover during an incident,
+/// while `cancel_admin_transfer` stays available to revoke the proposal.
+#[test]
+fn test_regression_accept_admin_transfer_blocked_while_paused() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let pending = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.propose_admin_transfer(&admin, &pending);
+    client.pause(&admin);
+
+    assert_eq!(
+        client
+            .try_accept_admin_transfer(&pending)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::Paused
+    );
+    assert_eq!(client.get_admin(), admin);
+
+    client.cancel_admin_transfer(&admin);
+    client.unpause(&admin);
+    assert_eq!(
+        client
+            .try_accept_admin_transfer(&pending)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::NoPendingTransfer
+    );
+}
+
+/// Regression test for #365: propose(B) -> transfer_admin(C) -> accept(B) must
+/// be rejected, because `transfer_admin` clears the stale pending proposal.
+#[test]
+fn test_regression_transfer_admin_clears_pending_admin_transfer() {
+    let (env, client) = setup();
+    let admin_a = Address::generate(&env);
+    let admin_b = Address::generate(&env);
+    let admin_c = Address::generate(&env);
+    client.initialize(&admin_a);
+
+    client.propose_admin_transfer(&admin_a, &admin_b);
+    client.transfer_admin(&admin_a, &admin_c);
+
+    assert_eq!(
+        client
+            .try_accept_admin_transfer(&admin_b)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::NoPendingTransfer
+    );
+    assert_eq!(client.get_admin(), admin_c);
+}
+
+/// Regression test for #364: a window of inactive alerts must not make
+/// `deactivate_all_alerts` return `0` while active alerts remain further on.
+#[test]
+fn test_regression_deactivate_all_alerts_does_not_return_zero_mid_scan() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+
+    let mut ids = std::vec::Vec::new();
+    for _ in 0..(crate::MAX_DEACTIVATIONS_PER_CALL + 2) {
+        ids.push(register(&env, &client, &owner, "A"));
+    }
+    // The first full window of alerts is already inactive.
+    for id in ids.iter().take(crate::MAX_DEACTIVATIONS_PER_CALL as usize) {
+        client.update_alert(&owner, id, &vec![&env], &false);
+    }
+
+    assert_eq!(client.deactivate_all_alerts(&owner), 2);
+    assert_eq!(client.get_active_alert_count(&owner), 0);
+    assert_eq!(client.deactivate_all_alerts(&owner), 0);
+}
+
+/// Regression test for #363: removing an ID that is absent from the contract
+/// index must not decrement `ContractLiveCount`.
+#[test]
+fn test_regression_remove_from_contract_index_keeps_count_when_id_absent() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    let reg = |label: &str| {
+        client.register_alert(
+            &owner,
+            &target,
+            &str(&env, label),
+            &hash64(&env),
+            &vec![&env, str(&env, "rule:transfer")],
+        )
+    };
+    let id1 = reg("one");
+    let _id2 = reg("two");
+
+    // Simulate an archived / rebuilt index that no longer lists `id1`.
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(
+            &crate::DataKey::ContractIndex(target.clone()),
+            &soroban_sdk::Vec::<u64>::new(&env),
+        );
+    });
+    let before: u32 = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get(&crate::DataKey::ContractLiveCount(target.clone()))
+            .unwrap()
+    });
+
+    client.remove_alert(&owner, &id1);
+
+    let after: u32 = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get(&crate::DataKey::ContractLiveCount(target.clone()))
+            .unwrap()
+    });
+    assert_eq!(before, after, "live count must not drift when the ID was absent");
 }
