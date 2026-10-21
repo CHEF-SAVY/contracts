@@ -29,7 +29,7 @@ Emitted when a new alert is successfully registered.
 
 ### `alert.update`
 
-Emitted when an alert's rules or active flag are changed.
+Emitted when an alert's rules or active flag are changed via `update_alert`.
 
 | Field | Value |
 |---|---|
@@ -38,6 +38,25 @@ Emitted when an alert's rules or active flag are changed.
 | Data | `(id: u64, owner: Address, active: bool)` |
 
 **Status:** ✅ implemented (`update_alert`)
+
+> A pure activation toggle through `set_alert_active` does **not** emit this
+> topic — it emits [`alert.act_set`](#alertact_set) instead, so an indexer can
+> tell a rules rewrite from a toggle without re-fetching the alert.
+
+---
+
+### `alert.act_set`
+
+Emitted when only an alert's `active` flag is flipped via `set_alert_active`;
+the rules are unchanged.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("alert")` |
+| Topic 1 | `Symbol("act_set")` |
+| Data | `(id: u64, owner: Address, active: bool)` |
+
+**Status:** ✅ implemented (`set_alert_active`)
 
 ---
 
@@ -306,7 +325,7 @@ Emitted when the admin role is first initialised.
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("init")` |
-| Data | `(admin: Address)` |
+| Data | `(admin: Address,)` |
 
 **Status:** ✅ implemented (`initialize`)
 
@@ -314,7 +333,11 @@ Emitted when the admin role is first initialised.
 
 ### `admin.transfer`
 
-Emitted when the admin role is transferred to a new address.
+Emitted when the admin role is transferred to a new address, including after
+the proposed admin accepts the transfer.
+Emitted when the admin role is transferred to a new address, by either
+`transfer_admin` or `accept_admin_transfer`. Both paths use the same payload
+shape.
 
 | Field | Value |
 |---|---|
@@ -322,7 +345,7 @@ Emitted when the admin role is transferred to a new address.
 | Topic 1 | `Symbol("transfer")` |
 | Data | `(old_admin: Address, new_admin: Address)` |
 
-**Status:** ✅ implemented (`transfer_admin`)
+**Status:** ✅ implemented (`transfer_admin`, `accept_admin_transfer`)
 
 ---
 
@@ -398,7 +421,8 @@ The current admin is unchanged.
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("cancel")` |
-| Data | `(admin: Address)` |
+| Data | `(admin: Address,)` |
+| Data | `(admin: Address,)` (a one-element tuple) |
 
 **Status:** ✅ implemented (`cancel_admin_transfer`)
 
@@ -413,7 +437,7 @@ rejected until `admin.unpause` is emitted.
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("pause")` |
-| Data | `(admin: Address)` |
+| Data | `(admin: Address,)` |
 
 **Status:** ✅ implemented (`pause`)
 
@@ -427,7 +451,7 @@ Emitted when an admin resumes normal operation with `unpause`.
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("unpause")` |
-| Data | `(admin: Address)` |
+| Data | `(admin: Address,)` |
 
 **Status:** ✅ implemented (`unpause`)
 
@@ -443,7 +467,7 @@ Emitted when a new watcher address is authorised.
 |---|---|
 | Topic 0 | `Symbol("watcher")` |
 | Topic 1 | `Symbol("register")` |
-| Data | `(watcher: Address)` |
+| Data | `(watcher: Address,)` |
 
 **Status:** ✅ implemented (`register_watcher`)
 
@@ -457,7 +481,7 @@ Emitted when a watcher address is de-authorised.
 |---|---|
 | Topic 0 | `Symbol("watcher")` |
 | Topic 1 | `Symbol("remove")` |
-| Data | `(watcher: Address)` |
+| Data | `(watcher: Address,)` |
 
 **Status:** ✅ implemented (`remove_watcher`, `clear_all_watchers`)
 
@@ -518,7 +542,7 @@ for (const ev of events) {
   if (topic0 !== "watcher") continue;
 
   if (topic1 === "remove") {
-    const addr = ev.data as string; // old/removed watcher
+    const [addr] = ev.data as [string]; // old/removed watcher
     revoked.add(key(ev.ledgerSeq, ev.contractId, addr));
   } else if (topic1 === "replace") {
     const [oldWatcher, newWatcher] = ev.data as [string, string];
@@ -546,7 +570,7 @@ Emitted when the watcher registry admin is first initialised.
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("init")` |
-| Data | `(admin: Address)` |
+| Data | `(admin: Address,)` |
 
 **Status:** ✅ implemented (`initialize`)
 
@@ -582,15 +606,18 @@ Emitted when an admin is removed from the admin set.
 
 ### `admin.transfer`
 
-Emitted when the watcher registry admin role is transferred.
+Emitted when the watcher registry admin set is replaced by a new admin.
 
 | Field | Value |
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("transfer")` |
-| Data | `(old_admin: Address, new_admin: Address)` |
+| Data | `(old_admins: Vec<Address>, new_admin: Address)` |
 
-**Status:** ✅ implemented (`transfer_admin`)
+The full set of admins being replaced is recorded, including when the transfer
+is accepted by the proposed admin.
+
+**Status:** ✅ implemented (`transfer_admin`, `accept_admin_transfer`)
 
 ---
 
@@ -649,7 +676,7 @@ Emitted when a queued admin action is cancelled before execution.
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("cancel")` |
-| Data | `(caller: Address)` |
+| Data | `(caller: Address,)` |
 
 **Status:** ✅ implemented (`cancel_admin_action`)
 
@@ -665,7 +692,7 @@ emitted alongside it.
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("execute")` |
-| Data | `(caller: Address)` |
+| Data | `(caller: Address,)` |
 
 **Status:** ✅ implemented (`execute_admin_action`)
 
@@ -680,7 +707,7 @@ rejected until `admin.unpause` is emitted.
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("pause")` |
-| Data | `(caller: Address)` |
+| Data | `(caller: Address,)` |
 
 **Status:** ✅ implemented (`pause`)
 
@@ -694,7 +721,7 @@ Emitted when an admin resumes normal operation with `unpause`.
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("unpause")` |
-| Data | `(caller: Address)` |
+| Data | `(caller: Address,)` |
 
 **Status:** ✅ implemented (`unpause`)
 

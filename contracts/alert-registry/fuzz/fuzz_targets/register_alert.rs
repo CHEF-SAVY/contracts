@@ -1,62 +1,99 @@
 #![no_main]
 
 use alert_registry::{AlertRegistry, AlertRegistryClient, ContractError};
+use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String as SorobanString, Vec as SorobanVec};
+use soroban_sdk::{
+    testutils::Address as _, Address, BytesN, Env, String as SorobanString, Vec as SorobanVec,
+};
 
-fuzz_target!(|data: &[u8]| {
-    if data.len() < 70 {
-        return;
-    }
+/// The set of rule descriptors the contract currently recognises.
+const VALID_RULES: &[&str] = &["rule:transfer", "rule:mint"];
 
+/// Structured fuzz input derived via `arbitrary`, replacing the manual
+/// byte-slice parsing that caused out-of-bounds indexing (see #426).
+#[derive(Arbitrary, Debug)]
+struct FuzzInput {
+    /// Raw bytes for the alert label (may not be valid UTF-8).
+    label_bytes: Vec<u8>,
+    /// 32-byte webhook hash.
+    webhook_hash: [u8; 32],
+    /// Indices into VALID_RULES (arbitrary crate keeps values in range via
+    /// modular reduction in the harness, so any u8 value is safe).
+    rule_indices: Vec<u8>,
+}
+
+fuzz_target!(|input: FuzzInput| {
     let env = Env::default();
     env.mock_all_auths();
 
+    // Fix #3: register the contract with constructor args so initialize is
+    // called before any mutating entry point.
     let contract_id = env.register(AlertRegistry, ());
     let client = AlertRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    // initialize returns Err(AlreadyInitialized) on a second call; we call it
+    // exactly once here so this never fails.
+    client.initialize(&admin);
 
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
-    // Parse fuzz input
-    let label_len = data[0] as usize;
-    let hash_len = data[1] as usize;
-    let rules_count = data[2] as usize;
-
-    let label_end = 3 + label_len.min(100);
-    let label = if let Ok(s) = core::str::from_utf8(&data[3..label_end.min(data.len())]) {
-        SorobanString::from_str(&env, s)
-    } else {
-        return;
+    // Fix #1: label is built entirely from input.label_bytes — no manual
+    // byte-slice arithmetic that could index out of bounds.
+    let label = match core::str::from_utf8(&input.label_bytes) {
+        Ok(s) => SorobanString::from_str(&env, s),
+        Err(_) => return, // not valid UTF-8 — skip this input
     };
 
-    // Create deterministic hash
-    let hash_bytes: [u8; 32] = {
-        let mut b = [0u8; 32];
-        for i in 0..32.min(hash_len.min(data.len())) {
-            b[i] = data[label_end + i];
-        }
-        b
-    };
-    let hash = BytesN::from_array(&env, &hash_bytes);
+    let hash = BytesN::from_array(&env, &input.webhook_hash);
 
-    // Create rule set
+    // Build a rule list from the fuzz-controlled indices. Every index is
+    // reduced modulo VALID_RULES.len() so no OOB access is possible.
     let mut rules: SorobanVec<SorobanString> = SorobanVec::new(&env);
-    let rule_names = ["rule:transfer", "rule:mint"];
-    for i in 0..(rules_count.min(2)) {
-        rules.push_back(SorobanString::from_str(&env, rule_names[i % 2]));
+    for idx in &input.rule_indices {
+        let rule = VALID_RULES[*idx as usize % VALID_RULES.len()];
+        rules.push_back(SorobanString::from_str(&env, rule));
     }
 
     let result = client.try_register_alert(&owner, &target, &label, &hash, &rules);
 
-    // Verify error types
+    // Fix #2: assert on the outcome rather than silently discarding it.
     match result {
-        Err(e) => {
-            // Verify error is one of the expected types
-            let _ = e;
+        Ok(Ok(config_id)) => {
+            // Success: the returned ID must round-trip through get_alert.
+            // We use the owner as the querier (no watcher-gating is configured).
+            let fetched = client
+                .try_get_alert(&owner, &config_id)
+                .expect("get_alert must not panic")
+                .expect("get_alert must return Ok");
+            let config = fetched.expect("alert registered successfully must be retrievable");
+            assert_eq!(config.owner, owner);
+            assert_eq!(config.target_contract, target);
         }
-        Ok(_) => {
-            // Success case: alert should be registered
+        Ok(Err(contract_error)) => {
+            // Only the documented validation errors are acceptable outcomes.
+            assert!(
+                matches!(
+                    contract_error,
+                    ContractError::NotInitialized
+                        | ContractError::EmptyLabel
+                        | ContractError::LabelTooLong
+                        | ContractError::TooManyRules
+                        | ContractError::InvalidRuleDescriptor
+                        | ContractError::DuplicateRule
+                        | ContractError::OwnerAlertLimitExceeded
+                        | ContractError::ContractAlertLimitExceeded
+                        | ContractError::GlobalAlertLimitExceeded
+                        | ContractError::Paused
+                ),
+                "unexpected ContractError variant: {:?}",
+                contract_error,
+            );
+        }
+        Err(_invoke_error) => {
+            // A host-level InvokeError (e.g. auth failure simulated by the
+            // test environment) is not a contract bug; skip silently.
         }
     }
 });

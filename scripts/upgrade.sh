@@ -42,6 +42,7 @@ done
 
 parse_args "${ARGS[@]}"
 require_contract_args
+WASM="$(wasm_path "$CONTRACT")"
 resolve_network
 
 IDENTITY="${STELLAR_IDENTITY:-deployer}"
@@ -117,7 +118,6 @@ fi
 
 # If we need to build / install WASM (for direct upgrade or propose)
 if [ -z "$NEW_WASM_HASH" ]; then
-  WASM="$(wasm_path "$CONTRACT")"
   build_contract "$CONTRACT"
 
   echo "==> Installing new WASM on-chain..."

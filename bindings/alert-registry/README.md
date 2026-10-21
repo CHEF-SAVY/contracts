@@ -56,6 +56,15 @@ const paginatedAlerts = await contract.get_alerts_by_owner_paginated({
 });
 
 console.log('Paginated alerts:', paginatedAlerts);
+
+// Get a page of active alerts for a contract (bounded read, #384)
+const activePage = await contract.get_active_contract_alerts_paged({
+  target_contract: 'CONTRACT_ADDRESS',
+  offset: 0,
+  limit: 10,
+});
+
+console.log('Active alerts page:', activePage);
 ```
 
 ## API
@@ -77,15 +86,16 @@ The bindings provide TypeScript types and methods for all AlertRegistry contract
 ### Read Methods
 - `get_alert` - Get a single alert by ID (requires `querier`; gated when a `WatcherRegistry` is configured)
 - `get_alert_active` - Get just the active flag for an alert by ID (requires `querier`; gated when a `WatcherRegistry` is configured)
-- `get_alerts_for_contract` - Get all alerts for a contract
-- `get_active_alerts_for_contract` - Get only active alerts for a contract (requires `querier`; gated when a `WatcherRegistry` is configured)
-- `get_alerts_by_owner` - Get all alerts owned by an address
+- `get_alerts_for_contract` - Get all alerts for a contract (**deprecated** — unbounded; prefer `get_contract_alerts_paginated`)
+- `get_active_alerts_for_contract` - Get only active alerts for a contract (requires `querier`; gated when a `WatcherRegistry` is configured; **deprecated** — unbounded; prefer `get_active_contract_alerts_paged`)
+- `get_alerts_by_owner` - Get all alerts owned by an address (**deprecated** — unbounded; prefer `get_alerts_by_owner_paginated`)
 - `get_contract_alerts_paginated` - Get paginated alerts for a contract
+- `get_active_contract_alerts_paged` - Get a page of active alerts for a contract (bounded replacement for `get_active_alerts_for_contract`)
 - `get_alerts_by_owner_paginated` - Get paginated alerts by owner
 - `get_alerts_modified_since` - Get a bounded page of alerts modified since a timestamp
 - `get_alerts_modified_since_ledger` - Get a bounded page of alerts modified since a monotonic ledger sequence
 - `get_alert_count` - Get total number of alerts ever registered
-- `get_active_alert_count` - Get number of active alerts for an owner
+- `get_active_alert_count` - Get number of active alerts for an owner (**deprecated** — unbounded; prefer `get_non_removed_alert_count` or paginated reads)
 - `get_active_contract_alert_count` - Get number of active alerts for a target contract
 - `get_admin` - Get the current admin address
 - `get_per_owner_alert_limit` - Get the per-owner alert limit
