@@ -1760,4 +1760,123 @@ fn test_regression_admin_transfer_proposal_expires() {
     client.propose_admin_transfer(&admin, &new_admin);
     client.accept_admin_transfer(&new_admin);
     assert_eq!(client.get_admin(), new_admin);
+/// Regression test for #366: `accept_admin_transfer` must be blocked while
+/// paused so a pending admin cannot complete a takeover during an incident,
+/// while `cancel_admin_transfer` stays available to revoke the proposal.
+#[test]
+fn test_regression_accept_admin_transfer_blocked_while_paused() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let pending = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.propose_admin_transfer(&admin, &pending);
+    client.pause(&admin);
+
+    assert_eq!(
+        client
+            .try_accept_admin_transfer(&pending)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::Paused
+    );
+    assert_eq!(client.get_admin(), admin);
+
+    client.cancel_admin_transfer(&admin);
+    client.unpause(&admin);
+    assert_eq!(
+        client
+            .try_accept_admin_transfer(&pending)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::NoPendingTransfer
+    );
+}
+
+/// Regression test for #365: propose(B) -> transfer_admin(C) -> accept(B) must
+/// be rejected, because `transfer_admin` clears the stale pending proposal.
+#[test]
+fn test_regression_transfer_admin_clears_pending_admin_transfer() {
+    let (env, client) = setup();
+    let admin_a = Address::generate(&env);
+    let admin_b = Address::generate(&env);
+    let admin_c = Address::generate(&env);
+    client.initialize(&admin_a);
+
+    client.propose_admin_transfer(&admin_a, &admin_b);
+    client.transfer_admin(&admin_a, &admin_c);
+
+    assert_eq!(
+        client
+            .try_accept_admin_transfer(&admin_b)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::NoPendingTransfer
+    );
+    assert_eq!(client.get_admin(), admin_c);
+}
+
+/// Regression test for #364: a window of inactive alerts must not make
+/// `deactivate_all_alerts` return `0` while active alerts remain further on.
+#[test]
+fn test_regression_deactivate_all_alerts_does_not_return_zero_mid_scan() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+
+    let mut ids = std::vec::Vec::new();
+    for _ in 0..(crate::MAX_DEACTIVATIONS_PER_CALL + 2) {
+        ids.push(register(&env, &client, &owner, "A"));
+    }
+    // The first full window of alerts is already inactive.
+    for id in ids.iter().take(crate::MAX_DEACTIVATIONS_PER_CALL as usize) {
+        client.update_alert(&owner, id, &vec![&env], &false);
+    }
+
+    assert_eq!(client.deactivate_all_alerts(&owner), 2);
+    assert_eq!(client.get_active_alert_count(&owner), 0);
+    assert_eq!(client.deactivate_all_alerts(&owner), 0);
+}
+
+/// Regression test for #363: removing an ID that is absent from the contract
+/// index must not decrement `ContractLiveCount`.
+#[test]
+fn test_regression_remove_from_contract_index_keeps_count_when_id_absent() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    let reg = |label: &str| {
+        client.register_alert(
+            &owner,
+            &target,
+            &str(&env, label),
+            &hash64(&env),
+            &vec![&env, str(&env, "rule:transfer")],
+        )
+    };
+    let id1 = reg("one");
+    let _id2 = reg("two");
+
+    // Simulate an archived / rebuilt index that no longer lists `id1`.
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(
+            &crate::DataKey::ContractIndex(target.clone()),
+            &soroban_sdk::Vec::<u64>::new(&env),
+        );
+    });
+    let before: u32 = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get(&crate::DataKey::ContractLiveCount(target.clone()))
+            .unwrap()
+    });
+
+    client.remove_alert(&owner, &id1);
+
+    let after: u32 = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get(&crate::DataKey::ContractLiveCount(target.clone()))
+            .unwrap()
+    });
+    assert_eq!(before, after, "live count must not drift when the ID was absent");
 }
