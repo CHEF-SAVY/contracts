@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `renewAlertTtlFor({ caller, config_id, ttl })` and `getPruneCursor({ owner })`; `bumpAlert` and `renewAlertTtlFor` can fail with `InvalidTtl` (error 26). (#372, #373, #374)
+- `pruneExpiredAlerts({ owner })` now examines at most 50 index entries per call and resumes from a cursor; call again while `getPruneCursor` returns a value. (#374)
 - `getPendingAdminTransfer()` and `RegistryConfiguration.pending_admin`. (#369)
 - `acceptAdminTransfer` can now fail with `AdminTransferExpired` (error 24); admin transfer proposals expire after 120,960 ledgers. (#370)
 - `acceptAdminTransfer` now emits `admin.transfer` with `(old_admin, new_admin)` and `cancelAdminTransfer` emits `admin.cancel` with `(admin,)`. (#367)

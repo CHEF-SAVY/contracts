@@ -61,6 +61,8 @@ pub const ALERT_TRANSFER_EXPIRY_LEDGERS: u32 = 120_960;
 pub const ADMIN_TRANSFER_EXPIRY_LEDGERS: u32 = 120_960;
 /// Maximum number of owner-index entries processed by one bulk deactivation call.
 pub const MAX_DEACTIVATIONS_PER_CALL: u32 = 50;
+/// Maximum number of owner-index entries examined by one expired-alert prune pass.
+pub const MAX_PRUNE_PER_CALL: u32 = 50;
 /// Threshold, in ledgers, below which the contract's instance entry is
 /// extended by [`AlertRegistry::bump_instance_ttl`] and by every write to
 /// instance storage. Approximately 24 hours at the nominal 5-second ledger
@@ -104,6 +106,8 @@ pub enum DataKey {
     ContractLiveCount(Address),
     /// Next owner-index position to inspect for a resumable bulk deactivation.
     DeactivationCursor(Address),
+    /// Next owner-index position to inspect for a resumable expired-alert prune.
+    PruneCursor(Address),
     /// Monotonic counter used to generate unique alert IDs.
     NextId,
     /// Stores the [`PendingAlertTransfer`] proposed for an alert, until it is
@@ -226,6 +230,10 @@ pub enum ContractError {
     /// Returned by `propose_webhook` when the proposed hash is already live
     /// or already pending.
     NoopWebhookRotation = 23,
+    /// Returned by `bump_alert` and `renew_alert_ttl_for` when the requested
+    /// TTL is below `DEFAULT_TTL` (a no-op extension), or, for
+    /// `renew_alert_ttl_for`, above `MAX_TTL`.
+    InvalidTtl = 26,
     /// Returned by `validate_rules` (and so by `register_alert`,
     /// `update_alert` and `batch_register_alert`) when the rule list is empty.
     EmptyRules = 25,
@@ -1498,6 +1506,52 @@ impl AlertRegistry {
         Ok(())
     }
 
+    /// Like [`Self::renew_alert_ttl`], but extends the alert and its indexes to
+    /// `ttl` ledgers instead of [`DEFAULT_TTL`], so an owner can keep an alert
+    /// alive for longer than a day without using the unauthenticated
+    /// [`Self::bump_alert`].
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `caller`, who must be the
+    /// alert owner.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::AlertNotFound`] if `config_id` does not exist.
+    /// Returns [`ContractError::Unauthorized`] if `caller` is not the owner.
+    /// Returns [`ContractError::InvalidTtl`] if `ttl` is below [`DEFAULT_TTL`] or above [`MAX_TTL`].
+    ///
+    /// # Events
+    /// Emits `(Symbol("alert"), Symbol("renew"))` with data `(id: u64, owner: Address)`.
+    pub fn renew_alert_ttl_for(
+        env: Env,
+        caller: Address,
+        config_id: u64,
+        ttl: u32,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        Self::assert_not_paused(&env)?;
+
+        let config: AlertConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Alert(config_id))
+            .ok_or(ContractError::AlertNotFound)?;
+
+        Self::assert_owner(&config, &caller)?;
+        if !(DEFAULT_TTL..=MAX_TTL).contains(&ttl) {
+            return Err(ContractError::InvalidTtl);
+        }
+
+        Self::touch_alert(&env, config_id, &config, ttl);
+
+        env.events().publish(
+            (symbol_short!("alert"), symbol_short!("renew")),
+            (config_id, caller),
+        );
+
+        Ok(())
+    }
+
     /// Update only the label of an existing alert, leaving rules and webhook hash unchanged.
     ///
     /// Use this when you want to rename an alert without touching its rules or
@@ -1602,8 +1656,13 @@ impl AlertRegistry {
     /// point at nothing. [`AlertRegistry::register_alert`] also runs it
     /// automatically when an owner is at the per-owner limit.
     ///
+    /// Each call examines at most [`MAX_PRUNE_PER_CALL`] index entries, resuming
+    /// from a stored cursor, mirroring [`AlertRegistry::deactivate_all_alerts`].
+    /// [`AlertRegistry::get_prune_cursor`] returns `Some(_)` while a scan is
+    /// still in progress; call again until it returns `None`.
+    ///
     /// # Returns
-    /// The number of dangling IDs removed.
+    /// The number of dangling IDs removed in this pass.
     ///
     /// # Errors
     /// Returns [`ContractError::Paused`] while the contract is paused.
@@ -1614,6 +1673,13 @@ impl AlertRegistry {
     pub fn prune_expired_alerts(env: Env, owner: Address) -> Result<u32, ContractError> {
         Self::assert_not_paused(&env)?;
         Ok(Self::prune_owner_index(&env, &owner))
+    }
+
+    /// The owner-index position the next [`AlertRegistry::prune_expired_alerts`]
+    /// pass resumes from, or `None` if no prune scan is in progress.
+    #[must_use]
+    pub fn get_prune_cursor(env: Env, owner: Address) -> Option<u32> {
+        env.storage().persistent().get(&DataKey::PruneCursor(owner))
     }
 
     /// Remove any alert config from storage (admin only).
@@ -1743,7 +1809,8 @@ impl AlertRegistry {
     /// of alerts they did not agree to take (which would otherwise fill their
     /// per-owner quota and pollute their alert list). Proposing again replaces
     /// any earlier pending transfer. The proposal expires after
-    /// [`ALERT_TRANSFER_EXPIRY_LEDGERS`] ledgers.
+    /// [`ALERT_TRANSFER_EXPIRY_LEDGERS`] ledgers, and the alert's own entries are
+    /// extended to at least that long so the alert cannot expire mid-transfer.
     ///
     /// # Auth
     /// Requires a valid Stellar auth signature from `caller`, who must be the
@@ -1770,6 +1837,11 @@ impl AlertRegistry {
         if new_owner == config.owner {
             return Err(ContractError::InvalidTransferRecipient);
         }
+
+        // Keep the alert (and its indexes) alive for at least the whole transfer
+        // window; otherwise the record can expire first and the recipient's
+        // accept_alert_transfer fails with AlertNotFound.
+        Self::touch_alert(&env, config_id, &config, ALERT_TRANSFER_EXPIRY_LEDGERS);
 
         let expires_at_ledger = env
             .ledger()
@@ -2017,6 +2089,8 @@ impl AlertRegistry {
     ///
     /// # Errors
     /// Returns [`ContractError::AlertNotFound`] if `config_id` does not exist.
+    /// Returns [`ContractError::InvalidTtl`] if `ttl` is below [`DEFAULT_TTL`]: such
+    /// a bump would extend nothing, yet would still emit a misleading renewal event.
     ///
     /// # Events
     /// Emits `(Symbol("alert"), Symbol("bump"))` with data
@@ -2024,14 +2098,17 @@ impl AlertRegistry {
     pub fn bump_alert(env: Env, config_id: u64, ttl: u32) -> Result<(), ContractError> {
         Self::assert_not_paused(&env)?;
 
-        // Clamp the requested TTL to the protocol maximum.
-        let effective_ttl = ttl.min(MAX_TTL);
-
         let config: AlertConfig = env
             .storage()
             .persistent()
             .get(&DataKey::Alert(config_id))
             .ok_or(ContractError::AlertNotFound)?;
+
+        if ttl < DEFAULT_TTL {
+            return Err(ContractError::InvalidTtl);
+        }
+        // Clamp the requested TTL to the protocol maximum.
+        let effective_ttl = ttl.min(MAX_TTL);
 
         Self::touch_alert(&env, config_id, &config, effective_ttl);
 
@@ -2709,57 +2786,91 @@ impl AlertRegistry {
             return Ok(());
         }
         // Only pay for a scan of the owner's index when they are at the limit:
-        // expired alerts may be holding slots that should be released.
-        Self::prune_owner_index(env, owner);
-        if Self::owner_live_count(env, owner) >= limit {
-            return Err(ContractError::OwnerAlertLimitExceeded);
-        }
-        Ok(())
-    }
-
-    /// Find IDs in `owner`'s index whose alert record no longer exists and
-    /// drop them. Returns how many were dropped.
-    fn prune_owner_index(env: &Env, owner: &Address) -> u32 {
-        let mut dangling: Vec<u64> = vec![env];
-        for id in Self::owner_index(env, owner).iter() {
-            if !env.storage().persistent().has(&DataKey::Alert(id)) {
-                dangling.push_back(id);
+        // expired alerts may be holding slots that should be released. Scan
+        // window by window from the start, stopping as soon as a slot frees up.
+        // (A failed call rolls back state, so a resumable cursor cannot carry
+        // progress across rejected registrations.)
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PruneCursor(owner.clone()));
+        loop {
+            Self::prune_owner_index(env, owner);
+            if Self::owner_live_count(env, owner) < limit {
+                return Ok(());
+            }
+            if !env
+                .storage()
+                .persistent()
+                .has(&DataKey::PruneCursor(owner.clone()))
+            {
+                return Err(ContractError::OwnerAlertLimitExceeded);
             }
         }
-        if dangling.is_empty() {
-            return 0;
-        }
-        Self::drop_dangling_ids(env, owner, &dangling);
-        env.events().publish(
-            (symbol_short!("alert"), symbol_short!("pruned")),
-            (owner.clone(), dangling.len()),
-        );
-        dangling.len()
     }
 
-    /// Remove `ids` (whose records are gone) from `owner`'s index, decrement
-    /// the live counter accordingly, and clear any leftover per-alert entries.
-    ///
-    /// The contract index cannot be cleaned here: the target contract was only
-    /// recorded in the expired record. Its dangling IDs are harmless, since
-    /// contract-level counts check that each record exists.
-    fn drop_dangling_ids(env: &Env, owner: &Address, ids: &Vec<u64>) {
-        let storage = env.storage().persistent();
+    /// Examine one window of at most [`MAX_PRUNE_PER_CALL`] entries of `owner`'s
+    /// index, starting at the stored prune cursor, and drop IDs whose alert
+    /// record no longer exists. Returns how many were dropped.
+    fn prune_owner_index(env: &Env, owner: &Address) -> u32 {
+        let ids = Self::owner_index(env, owner);
+        let cursor_key = DataKey::PruneCursor(owner.clone());
+        let start = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u32>(&cursor_key)
+            .unwrap_or(0)
+            .min(ids.len());
+        let end = (start + MAX_PRUNE_PER_CALL).min(ids.len());
+
+        // Single pass: split the index into entries to keep and dangling IDs.
         let mut kept: Vec<u64> = vec![env];
-        let mut dropped: u32 = 0;
-        for id in Self::owner_index(env, owner).iter() {
-            if ids.contains(id) {
-                dropped += 1;
+        let mut dangling: Vec<u64> = vec![env];
+        for i in 0..ids.len() {
+            let id = ids.get(i).unwrap();
+            if i >= start && i < end && !env.storage().persistent().has(&DataKey::Alert(id)) {
+                dangling.push_back(id);
             } else {
                 kept.push_back(id);
             }
         }
+        let dropped = dangling.len();
+
+        if dropped > 0 {
+            Self::drop_dangling_ids(env, owner, &dangling, &kept);
+            env.events().publish(
+                (symbol_short!("alert"), symbol_short!("pruned")),
+                (owner.clone(), dropped),
+            );
+        }
+
+        if end < ids.len() {
+            // Dropped entries shift later positions down by `dropped`.
+            env.storage().persistent().set(&cursor_key, &(end - dropped));
+            env.storage()
+                .persistent()
+                .extend_ttl(&cursor_key, DEFAULT_TTL, DEFAULT_TTL);
+        } else {
+            env.storage().persistent().remove(&cursor_key);
+        }
+        dropped
+    }
+
+    /// Replace `owner`'s index with `kept` (the index minus `ids`, whose records
+    /// are gone), decrement the live counter accordingly, and clear any
+    /// leftover per-alert entries.
+    ///
+    /// The contract index cannot be cleaned here: the target contract was only
+    /// recorded in the expired record. Its dangling IDs are harmless, since
+    /// contract-level counts check that each record exists.
+    fn drop_dangling_ids(env: &Env, owner: &Address, ids: &Vec<u64>, kept: &Vec<u64>) {
+        let storage = env.storage().persistent();
+        let dropped = ids.len();
         for id in ids.iter() {
             storage.remove(&DataKey::AlertActive(id));
             storage.remove(&DataKey::PendingTransfer(id));
             storage.remove(&DataKey::AdminSuspended(id));
         }
-        storage.set(&DataKey::OwnerIndex(owner.clone()), &kept);
+        storage.set(&DataKey::OwnerIndex(owner.clone()), kept);
         storage.extend_ttl(&DataKey::OwnerIndex(owner.clone()), DEFAULT_TTL, DEFAULT_TTL);
         let count = Self::owner_live_count(env, owner);
         Self::set_owner_live_count(env, owner, count.saturating_sub(dropped));
@@ -3092,6 +3203,9 @@ impl AlertRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::DeactivationCursor(owner.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PruneCursor(owner.clone()));
         if removed {
             let count = Self::owner_live_count(env, owner);
             Self::set_owner_live_count(env, owner, count.saturating_sub(1));
