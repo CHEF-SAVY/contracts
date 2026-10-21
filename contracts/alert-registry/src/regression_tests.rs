@@ -1,3 +1,7 @@
+// The unpaginated getters are deprecated (#384) but still part of the
+// contract ABI; these tests pin their behaviour until they are removed.
+#![allow(deprecated)]
+
 use crate::AlertRegistry;
 use crate::AlertRegistryClient;
 use crate::ContractError;
@@ -971,6 +975,41 @@ fn test_regression_prune_expired_alerts() {
 
 // ── #199: retargeting respects the per-contract limit ────────────────────────
 
+/// Regression test for #383: `get_alert_ids_by_owner` returned the raw owner
+/// index, so an ID whose record had already been removed was still reported as
+/// if the alert existed. It now filters out those dangling IDs.
+#[test]
+fn test_regression_get_alert_ids_by_owner_filters_dangling() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    let keep = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Keep"),
+        &hash64(&env),
+        &vec![&env, str(&env, "rule:transfer")],
+    );
+    let remove = client.register_alert(
+        &owner,
+        &Address::generate(&env),
+        &str(&env, "Remove"),
+        &hash64c(&env, '1'),
+        &vec![&env, str(&env, "rule:mint")],
+    );
+
+    assert_eq!(client.get_alert_ids_by_owner(&owner).len(), 2);
+    client.remove_alert(&owner, &remove);
+
+    let ids = client.get_alert_ids_by_owner(&owner);
+    assert_eq!(ids.len(), 1, "removed alert must not be reported as live");
+    assert_eq!(ids.get(0).unwrap(), keep);
+    // The live-counter path agrees with the filtered list.
+    assert_eq!(client.get_non_removed_alert_count(&owner), 1);
+}
+
+// ── #199: retargeting respects the per-contract limit ────────────────────────
+
 /// Regression test for #199: `update_target_contract` used to move an alert
 /// into any contract's index without checking the per-contract limit, so
 /// alerts registered against throwaway targets could all be retargeted at one
@@ -1112,6 +1151,37 @@ fn test_regression_owner_cannot_undo_admin_deactivation() {
 
 #[test]
 fn test_regression_admin_suspension_follows_the_alert() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let owner = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+    let rules = vec![&env, str(&env, "rule:transfer")];
+    let id = client.register_alert(
+        &owner,
+        &Address::generate(&env),
+        &str(&env, "Spam"),
+        &hash64(&env),
+        &rules,
+    );
+    client.deactivate_alert_by_admin(&admin, &id);
+
+    // Handing the alert to another account does not escape the suspension.
+    client.propose_alert_transfer(&owner, &id, &new_owner);
+    client.accept_alert_transfer(&new_owner, &id);
+    assert_eq!(
+        client
+            .try_update_alert(&new_owner, &id, &rules, &true)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::AlertSuspended
+    );
+
+    // Removing the alert clears the flag with it.
+    client.remove_alert(&new_owner, &id);
+    assert!(!client.is_alert_suspended(&id));
+}
+
 /// Regression test for #204:
 /// `deactivate_all_alerts` returned a plain `0` while paused, which callers
 /// could not tell apart from "owner had no active alerts". It now returns

@@ -427,7 +427,6 @@ impl AlertRegistry {
     /// Returns [`ContractError::AlreadyInitialized`] if the contract has already been initialized.
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
-        if env.storage().instance().has(&symbol_short!("ADMIN")) {
         if env.storage().instance().has(&instance_key::ADMIN) {
             return Err(ContractError::AlreadyInitialized);
         }
@@ -667,7 +666,8 @@ impl AlertRegistry {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
 
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("upgrade")),
             (admin, new_wasm_hash),
@@ -1169,6 +1169,12 @@ impl AlertRegistry {
     /// # Auth
     /// Requires a valid Stellar auth signature from `caller`, who must also be
     /// the original owner of the alert.
+    ///
+    /// # Events
+    /// Emits `(Symbol("alert"), Symbol("update"))` with data
+    /// `(id: u64, owner: Address, active: bool)`. Rules-only toggles via
+    /// [`AlertRegistry::set_alert_active`] emit `act_set` instead, so the two
+    /// are distinguishable without re-fetching the alert.
     /// # Errors
     /// Returns [`ContractError::AlertNotFound`] if `config_id` does not identify an existing alert.
     /// Returns [`ContractError::Unauthorized`] if the caller is not authorized for this operation.
@@ -1225,6 +1231,12 @@ impl AlertRegistry {
     /// the alert's rules. Use this endpoint when pausing or resuming an alert
     /// so a client cannot accidentally clear its rules with an empty vector.
     ///
+    /// # Events
+    /// Emits `(Symbol("alert"), Symbol("act_set"))` with data
+    /// `(id: u64, owner: Address, active: bool)`. This topic is distinct from
+    /// the `update` topic [`AlertRegistry::update_alert`] emits, so an indexer
+    /// can tell a pure activation toggle from a rules rewrite.
+    ///
     /// # Auth
     /// Requires a valid Stellar auth signature from `caller`, who must also
     /// own the alert.
@@ -1269,8 +1281,11 @@ impl AlertRegistry {
         config.updated_ledger = env.ledger().sequence();
         Self::persist_alert(&env, config_id, &config);
 
+        // Distinct topic from `update_alert`'s `alert.update`: an indexer can
+        // tell an activation toggle (rules unchanged) from a rules rewrite
+        // without re-fetching the alert (#382).
         env.events().publish(
-            (symbol_short!("alert"), symbol_short!("update")),
+            (symbol_short!("alert"), symbol_short!("act_set")),
             (config_id, config.owner, active),
         );
         Ok(())
@@ -2063,7 +2078,7 @@ impl AlertRegistry {
 
         for i in 0..config_ids.len() {
             let config_id = config_ids.get(i).unwrap();
-            if config_ids.iter().take(i).any(|id| id == config_id) {
+            if config_ids.iter().take(i as usize).any(|id| id == config_id) {
                 continue;
             }
             let config: AlertConfig = env
@@ -2133,9 +2148,17 @@ impl AlertRegistry {
     /// watcher or the call returns [`ContractError::NotAWatcher`].
     ///
     /// Returns an empty vec if no alerts exist for `target_contract`.
+    ///
+    /// **Deprecated since 0.2.0, removal in 0.4.0:** the call deserializes
+    /// every alert watching the contract in one shot, so its cost grows without
+    /// bound. Prefer [`AlertRegistry::get_contract_alerts_paginated`] (#384).
     /// # Errors
     /// Returns [`ContractError::NotAWatcher`] if a watcher registry is configured
     /// and `querier` is not a registered watcher.
+    #[deprecated(
+        since = "0.2.0",
+        note = "unbounded read; prefer get_contract_alerts_paginated (removed in 0.4.0)"
+    )]
     pub fn get_alerts_for_contract(
         env: Env,
         querier: Address,
@@ -2154,9 +2177,18 @@ impl AlertRegistry {
     ///
     /// If a `WatcherRegistry` is configured, `querier` must be a registered
     /// watcher or the call returns [`ContractError::NotAWatcher`].
+    ///
+    /// **Deprecated since 0.2.0, removal in 0.4.0:** like
+    /// [`AlertRegistry::get_alerts_for_contract`], this deserializes the whole
+    /// contract index. Prefer [`AlertRegistry::get_active_contract_alerts_paged`]
+    /// (#384).
     /// # Errors
     /// Returns [`ContractError::NotAWatcher`] if a watcher registry is configured
     /// and `querier` is not a registered watcher.
+    #[deprecated(
+        since = "0.2.0",
+        note = "unbounded read; prefer get_active_contract_alerts_paged (removed in 0.4.0)"
+    )]
     pub fn get_active_alerts_for_contract(
         env: Env,
         querier: Address,
@@ -2173,9 +2205,17 @@ impl AlertRegistry {
     /// watcher or the call returns [`ContractError::NotAWatcher`].
     ///
     /// Returns an empty vec if `owner` has no registered alerts.
+    ///
+    /// **Deprecated since 0.2.0, removal in 0.4.0:** the call deserializes the
+    /// owner's whole index. Prefer [`AlertRegistry::get_alerts_by_owner_paginated`]
+    /// (#384), which bounds each call to one page.
     /// # Errors
     /// Returns [`ContractError::NotAWatcher`] if a watcher registry is configured
     /// and `querier` is not a registered watcher.
+    #[deprecated(
+        since = "0.2.0",
+        note = "unbounded read; prefer get_alerts_by_owner_paginated (removed in 0.4.0)"
+    )]
     pub fn get_alerts_by_owner(
         env: Env,
         querier: Address,
@@ -2186,20 +2226,33 @@ impl AlertRegistry {
         Ok(Self::configs_for_ids(&env, &ids))
     }
 
-    /// Retrieve the raw list of alert IDs owned by a given address.
+    /// Retrieve the live alert IDs owned by a given address.
     ///
     /// Thin wrapper over the underlying `OwnerIndex` entry. Use this instead
     /// of [`AlertRegistry::get_alerts_by_owner`] when only the IDs are needed (e.g. an
     /// existence check or a count) so callers don't pay the cost of
     /// deserializing every full [`AlertConfig`].
     ///
+    /// The result only contains IDs whose record still exists: the owner index
+    /// keeps dangling IDs until a prune runs, and returning them here would
+    /// make an existence check or a count lie (#383). For the number of live
+    /// alerts use [`AlertRegistry::get_non_removed_alert_count`], which reads a
+    /// counter instead of filtering this list.
+    ///
     /// Unlike [`AlertRegistry::get_alerts_by_owner`], this is not subject to
     /// watcher-gating, since it exposes no alert content.
     ///
-    /// Returns an empty vec if `owner` has no registered alerts.
+    /// Returns an empty vec if `owner` has no live registered alerts.
     #[must_use]
     pub fn get_alert_ids_by_owner(env: Env, owner: Address) -> Vec<u64> {
-        Self::owner_index(&env, &owner)
+        let storage = env.storage().persistent();
+        let mut live: Vec<u64> = vec![&env];
+        for id in Self::owner_index(&env, &owner).iter() {
+            if storage.has(&DataKey::Alert(id)) {
+                live.push_back(id);
+            }
+        }
+        live
     }
 
     /// Retrieve alert configs for a list of IDs in one call.
@@ -2237,6 +2290,38 @@ impl AlertRegistry {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::contract_index(&env, &target_contract);
         Ok(Self::configs_paginated(&env, &ids, offset, limit))
+    }
+
+    /// Get a page of **active** alert configs for a target contract.
+    ///
+    /// The bounded, paginated replacement for
+    /// [`AlertRegistry::get_active_alerts_for_contract`] (#384): instead of
+    /// deserializing every alert that watches `target_contract`, it walks only
+    /// the `[offset, offset + limit)` window of the contract index and keeps the
+    /// entries whose `active` flag is `true`.
+    ///
+    /// `limit` is clamped to [`MAX_PAGE_SIZE`]. `offset`/`limit` count index
+    /// slots rather than matches, so paging is deterministic even when most
+    /// slots are inactive: advance `offset` by `limit` until the returned vec is
+    /// shorter than `limit`.
+    ///
+    /// If a `WatcherRegistry` is configured, `querier` must be a registered
+    /// watcher or the call returns [`ContractError::NotAWatcher`].
+    ///
+    /// # Errors
+    /// Returns [`ContractError::NotAWatcher`] if a watcher registry is configured
+    /// and `querier` is not a registered watcher.
+    #[must_use]
+    pub fn get_active_contract_alerts_paged(
+        env: Env,
+        querier: Address,
+        target_contract: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<AlertConfig>, ContractError> {
+        Self::assert_watcher_if_configured(&env, &querier)?;
+        let ids = Self::contract_index(&env, &target_contract);
+        Ok(Self::active_configs_paginated(&env, &ids, offset, limit))
     }
 
     /// Get a page of alert configs owned by an address (offset + limit).
@@ -2609,6 +2694,17 @@ impl AlertRegistry {
     /// removals and deactivations. If you only need the number of live
     /// (non-removed) alerts regardless of the `active` flag, use
     /// [`AlertRegistry::get_non_removed_alert_count`], which is an O(1) lookup.
+    ///
+    /// **Deprecated since 0.2.0, removal in 0.4.0:** the scan over the owner
+    /// index grows with the number of alerts the owner has ever registered.
+    /// Prefer [`AlertRegistry::get_non_removed_alert_count`] (O(1)) when the
+    /// live count is enough, or page the alerts with
+    /// [`AlertRegistry::get_alerts_by_owner_paginated`] and filter on `active`
+    /// (#384).
+    #[deprecated(
+        since = "0.2.0",
+        note = "unbounded scan; prefer get_non_removed_alert_count or paginated reads (removed in 0.4.0)"
+    )]
     #[must_use]
     pub fn get_active_alert_count(env: Env, owner: Address) -> u32 {
         let ids = Self::owner_index(&env, &owner);
@@ -2661,7 +2757,6 @@ impl AlertRegistry {
             }
         }
         count
-        Self::contract_live_count(&env, &target_contract)
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────────
@@ -3297,6 +3392,39 @@ impl AlertRegistry {
         }
         out
     }
+
+    /// Like [`AlertRegistry::configs_paginated`] but only includes entries where
+    /// `active == true`.
+    ///
+    /// The page window is applied to the *index* (`offset`/`limit` count index
+    /// slots, not matches), so callers can keep paging deterministically even
+    /// when most slots are inactive. Missing or expired records are skipped.
+    fn active_configs_paginated(
+        env: &Env,
+        ids: &Vec<u64>,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<AlertConfig> {
+        let mut out: Vec<AlertConfig> = vec![env];
+        let count = ids.len();
+        let first = offset.min(count);
+        let last = offset
+            .saturating_add(limit.min(MAX_PAGE_SIZE))
+            .min(count);
+        for i in first..last {
+            let id = ids.get(i).unwrap();
+            if let Some(cfg) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
+            {
+                if cfg.active {
+                    out.push_back(cfg);
+                }
+            }
+        }
+        out
+    }
 }
 
 impl AlertRegistry {
@@ -3352,6 +3480,10 @@ impl AlertRegistry {
 
 #[cfg(test)]
 mod tests {
+    // The unpaginated getters are deprecated (#384) but still part of the
+    // contract ABI; these tests pin their behaviour until they are removed.
+    #![allow(deprecated)]
+
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Events as _, Ledger as _},
@@ -3448,6 +3580,69 @@ mod tests {
         let cfg = client.get_alert(&owner, &id).unwrap();
         assert!(!cfg.active);
         assert_eq!(cfg.rules.get(0).unwrap(), str(&env, "rule:mint"));
+    }
+
+    // #382: `update_alert` and `set_alert_active` must be distinguishable
+    // from the emitted topic alone, so an indexer need not re-fetch the alert
+    // to learn whether the rules changed.
+    #[test]
+    fn test_update_and_set_active_emit_distinguishable_topics() {
+        use soroban_sdk::{symbol_short, testutils::Events as _, Symbol};
+
+        let has_topic = |env: &Env, topic1: Symbol| {
+            env.events().all().iter().any(|(_, topics, _)| {
+                topics.len() == 2
+                    && Symbol::from_val(env, &topics.get(0).unwrap()) == symbol_short!("alert")
+                    && Symbol::from_val(env, &topics.get(1).unwrap()) == topic1
+            })
+        };
+
+        // A pure activation toggle emits `act_set`, never `update`.
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let target = Address::generate(&env);
+        let id = client.register_alert(
+            &owner,
+            &target,
+            &str(&env, "Alert"),
+            &hash64(&env),
+            &vec![&env, str(&env, "rule:transfer")],
+        );
+        client.set_alert_active(&owner, &id, &false);
+        assert!(
+            has_topic(&env, symbol_short!("act_set")),
+            "set_alert_active must emit alert.act_set"
+        );
+        assert!(
+            !has_topic(&env, symbol_short!("update")),
+            "set_alert_active must not emit alert.update"
+        );
+
+        // A rules rewrite emits `update`, never `act_set`.
+        let (env2, client2) = setup();
+        let owner2 = Address::generate(&env2);
+        let target2 = Address::generate(&env2);
+        let id2 = client2.register_alert(
+            &owner2,
+            &target2,
+            &str(&env2, "Alert"),
+            &hash64(&env2),
+            &vec![&env2, str(&env2, "rule:transfer")],
+        );
+        client2.update_alert(
+            &owner2,
+            &id2,
+            &vec![&env2, str(&env2, "rule:mint")],
+            &true,
+        );
+        assert!(
+            has_topic(&env2, symbol_short!("update")),
+            "update_alert must emit alert.update"
+        );
+        assert!(
+            !has_topic(&env2, symbol_short!("act_set")),
+            "update_alert must not emit alert.act_set"
+        );
     }
 
     // 3. Happy path — remove alert
@@ -4388,6 +4583,10 @@ mod tests {
         assert_eq!(
             alert_client.get_watcher_registry().unwrap(),
             watcher_contract_id
+        );
+        assert!(alert_client.get_watcher_registry().is_some());
+    }
+
     // 17b. clear_watcher_registry disables gating; set_watcher_registry can
     // re-enable it afterward.
     #[test]

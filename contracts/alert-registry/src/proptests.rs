@@ -3,7 +3,8 @@
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
     clippy::redundant_closure_for_method_calls,
-    clippy::vec_init_then_push
+    clippy::vec_init_then_push,
+    deprecated
 )]
 
 extern crate std;
