@@ -975,6 +975,65 @@ fn test_regression_prune_expired_alerts() {
 
 // ── #199: retargeting respects the per-contract limit ────────────────────────
 
+/// Regression test for #385: `get_active_alert_count` used to scan the owner's
+/// whole index on every call, which is unbounded work. It now reads a counter
+/// that every mutator keeps in step, so the value must track registration,
+/// activation toggles, admin suspension, removal, and bulk deactivation exactly.
+#[test]
+fn test_regression_get_active_alert_count_tracks_mutations() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let owner = Address::generate(&env);
+
+    let a = register(&env, &client, &owner, "A");
+    let b = register(&env, &client, &owner, "B");
+    assert_eq!(client.get_active_alert_count(&owner), 2);
+    assert_eq!(client.get_non_removed_alert_count(&owner), 2);
+
+    // A toggle is reflected without a rescan.
+    client.set_alert_active(&owner, &a, &false);
+    assert_eq!(client.get_active_alert_count(&owner), 1);
+    // A redundant toggle must not skew the counter.
+    client.set_alert_active(&owner, &a, &false);
+    assert_eq!(client.get_active_alert_count(&owner), 1);
+    client.set_alert_active(&owner, &a, &true);
+    assert_eq!(client.get_active_alert_count(&owner), 2);
+
+    // A rules rewrite that flips `active` counts too.
+    client.update_alert(&owner, &b, &vec![&env, str(&env, "rule:transfer")], &false);
+    assert_eq!(client.get_active_alert_count(&owner), 1);
+
+    // Admin suspension drops the alert from the active count.
+    client.deactivate_alert_by_admin(&admin, &a);
+    assert_eq!(client.get_active_alert_count(&owner), 0);
+
+    // Removal keeps it at zero.
+    client.remove_alert(&owner, &b);
+    assert_eq!(client.get_active_alert_count(&owner), 0);
+
+    // Bulk deactivation adjusts once per pass.
+    register(&env, &client, &owner, "C");
+    register(&env, &client, &owner, "D");
+    assert_eq!(client.get_active_alert_count(&owner), 2);
+    assert_eq!(client.deactivate_all_alerts(&owner), 2);
+    assert_eq!(client.get_active_alert_count(&owner), 0);
+}
+
+/// Regression test for #385 (transfer path): moving an active alert between
+/// owners must migrate the active counter so neither owner's count drifts.
+#[test]
+fn test_regression_active_count_follows_transfer() {
+    let (env, client, owner, _target, id) = transfer_fixture();
+    let recipient = Address::generate(&env);
+
+    assert_eq!(client.get_active_alert_count(&owner), 1);
+
+    client.propose_alert_transfer(&owner, &id, &recipient);
+    client.accept_alert_transfer(&recipient, &id);
+
+    assert_eq!(client.get_active_alert_count(&owner), 0);
+    assert_eq!(client.get_active_alert_count(&recipient), 1);
 /// Regression test for #383: `get_alert_ids_by_owner` returned the raw owner
 /// index, so an ID whose record had already been removed was still reported as
 /// if the alert existed. It now filters out those dangling IDs.
