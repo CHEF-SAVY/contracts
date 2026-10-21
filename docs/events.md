@@ -316,6 +316,9 @@ Emitted when the admin role is first initialised.
 
 Emitted when the admin role is transferred to a new address, including after
 the proposed admin accepts the transfer.
+Emitted when the admin role is transferred to a new address, by either
+`transfer_admin` or `accept_admin_transfer`. Both paths use the same payload
+shape.
 
 | Field | Value |
 |---|---|
@@ -400,6 +403,7 @@ The current admin is unchanged.
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("cancel")` |
 | Data | `(admin: Address,)` |
+| Data | `(admin: Address,)` (a one-element tuple) |
 
 **Status:** ✅ implemented (`cancel_admin_transfer`)
 

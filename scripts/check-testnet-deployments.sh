@@ -3,7 +3,8 @@
 set -euo pipefail
 
 RPC_URL="${RPC_URL:-https://soroban-testnet.stellar.org}"
-DEPLOYMENTS_FILE="${1:-DEPLOYMENTS.md}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOYMENTS_FILE="${1:-${SCRIPT_DIR}/../DEPLOYMENTS.md}"
 
 echo "======================================================="
 echo "TxWatch Testnet Deployment Liveness Check"
@@ -34,11 +35,11 @@ echo ""
 echo "--> Extracting testnet contract addresses from $DEPLOYMENTS_FILE..."
 
 # Parse addresses using python
-CONTRACTS_JSON=$(python3 - <<'PYEOF'
+CONTRACTS_JSON=$(python3 - "$DEPLOYMENTS_FILE" <<'PYEOF'
 import re, json, sys
 
 try:
-    with open("DEPLOYMENTS.md", "r") as f:
+    with open(sys.argv[1], "r") as f:
         content = f.read()
 except Exception as e:
     print(json.dumps({"error": str(e)}))
