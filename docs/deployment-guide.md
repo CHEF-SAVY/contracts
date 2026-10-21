@@ -35,8 +35,8 @@ To prevent developers and integration pipelines from encountering silent failure
 A GitHub Actions workflow ([`.github/workflows/check-testnet-deployments.yml`](../.github/workflows/check-testnet-deployments.yml)) runs daily at `00:00 UTC` (and on manual `workflow_dispatch`):
 1. Queries the Soroban RPC `getHealth` endpoint.
 2. Extracts active testnet contract addresses from `DEPLOYMENTS.md`.
-3. Verifies that each contract is live on the testnet ledger.
-4. Fails loudly with remediation instructions if any address is missing.
+3. Queries `getLedgerEntries` for each contract's persistent instance entry and verifies it remains live and unarchived.
+4. Fails loudly if an RPC request fails or any instance entry is missing or archived. A failed check opens one deduplicated GitHub issue; a later successful check closes it.
 
 ### B. Local CLI Check
 You can run the liveness check locally at any time:
@@ -56,16 +56,12 @@ Deployments File: DEPLOYMENTS.md
 --> Checking Soroban Testnet RPC health...
     RPC is healthy. Latest ledger: 4362672
 
---> Extracting testnet contract addresses from DEPLOYMENTS.md...
-    Found 2 testnet contract(s) to verify.
-
---> Checking Alert Registry (CDSO4GGZH7KBUQYKOIQDCMCFSRYEPOVDUX7Z4IB5TWNTLT2GDRKDQOYR)...
-    [LIVE] Contract exists on testnet ledger.
---> Checking Watcher Registry (CCSHRYACRNVSLC5NP3V2DL6LGID57TQT2TJXVUVXBBZX6SED6N3F7X6J)...
-    [LIVE] Contract exists on testnet ledger.
+--> Verifying 2 contract instance(s)...
+    [LIVE] Alert Registry (CDSO4GGZH7KBUQYKOIQDCMCFSRYEPOVDUX7Z4IB5TWNTLT2GDRKDQOYR)
+    [LIVE] Watcher Registry (CCSHRYACRNVSLC5NP3V2DL6LGID57TQT2TJXVUVXBBZX6SED6N3F7X6J)
 
 =======================================================
-✅ ALL TESTNET CONTRACT ADDRESSES ARE LIVE
+ALL TESTNET CONTRACT INSTANCES ARE LIVE
 =======================================================
 ```
 
@@ -177,4 +173,3 @@ Contract upgrades on mainnet are performed using `scripts/upgrade.sh`:
   --network mainnet \
   --yes
 ```
-

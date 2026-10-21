@@ -56,6 +56,9 @@ pub enum ContractError {
     Paused = 14,
     /// Returned when an operation would drop the watcher count below [`MIN_WATCHERS`].
     BelowMinWatchers = 15,
+    /// Returned by `accept_admin_transfer` when the pending admin transfer is
+    /// past its expiry ledger.
+    AdminTransferExpired = 16,
 }
 
 // ── TTL constants ────────────────────────────────────────────────────────────
@@ -68,6 +71,11 @@ pub const INSTANCE_BUMP_THRESHOLD: u32 = 17_280;
 /// TTL the instance entry is extended to. Approximately 31 days, the
 /// protocol maximum. See `docs/ttl.md`.
 pub const INSTANCE_BUMP_AMOUNT: u32 = 535_680;
+
+/// Number of ledgers a proposed admin transfer stays open for the proposed
+/// admin to accept (approximately 7 days at the nominal 5-second ledger close
+/// time). After that it can only be cancelled or replaced.
+pub const ADMIN_TRANSFER_EXPIRY_LEDGERS: u32 = 120_960;
 
 // ── Capacity limits ──────────────────────────────────────────────────────────
 
@@ -102,7 +110,7 @@ pub enum DataKey {
     Admins,
     /// Stores the `Vec<Address>` of authorized watcher nodes.
     Watchers,
-    /// Stores the `Address` proposed as the new admin set by
+    /// Stores the `(Address, u32)` pair `(new_admin, expires_at_ledger)` proposed as the new admin set by
     /// [`WatcherRegistry::propose_admin_transfer`], pending its own
     /// acceptance via [`WatcherRegistry::accept_admin_transfer`].
     PendingAdminTransfer,
@@ -193,7 +201,7 @@ impl WatcherRegistry {
         env.storage().instance().set(&DataKey::Admins, &admins);
 
         env.events()
-            .publish((symbol_short!("admin"), symbol_short!("init")), admin);
+            .publish((symbol_short!("admin"), symbol_short!("init")), (admin,));
     }
 
     /// Initialize the registry with a single bootstrap admin. Can only be called once.
@@ -217,7 +225,7 @@ impl WatcherRegistry {
         env.storage().instance().set(&DataKey::Admins, &admins);
 
         env.events()
-            .publish((symbol_short!("admin"), symbol_short!("init")), admin);
+            .publish((symbol_short!("admin"), symbol_short!("init")), (admin,));
 
         Ok(())
     }
@@ -300,6 +308,10 @@ impl WatcherRegistry {
     /// this prevents a typo'd or unowned address from permanently locking the
     /// contract.
     ///
+    /// The proposal expires [`ADMIN_TRANSFER_EXPIRY_LEDGERS`] ledgers after it is
+    /// made; [`WatcherRegistry::accept_admin_transfer`] then fails with
+    /// [`ContractError::AdminTransferExpired`].
+    ///
     /// This replaces any previously pending proposal. This replaces the
     /// **entire** admin set with a single new admin once accepted. Use
     /// [`WatcherRegistry::add_admin`] + [`WatcherRegistry::remove_admin`] if you want to rotate one member of a
@@ -326,9 +338,14 @@ impl WatcherRegistry {
         Self::assert_admin(&env, &admin)?;
         Self::assert_timelock_disabled(&env)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::PendingAdminTransfer, &new_admin);
+        let expires_at_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(ADMIN_TRANSFER_EXPIRY_LEDGERS);
+        env.storage().instance().set(
+            &DataKey::PendingAdminTransfer,
+            &(new_admin.clone(), expires_at_ledger),
+        );
 
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("propose")),
@@ -357,7 +374,7 @@ impl WatcherRegistry {
         Self::assert_admin(&env, &admin)?;
         Self::assert_timelock_disabled(&env)?;
 
-        Self::do_transfer_admin(&env, &admin, new_admin);
+        Self::do_transfer_admin(&env, new_admin);
 
         Ok(())
     }
@@ -365,17 +382,21 @@ impl WatcherRegistry {
     /// Accept a pending admin transfer proposed via [`WatcherRegistry::propose_admin_transfer`].
     ///
     /// Requires `new_admin`'s own signature, proving key control before the
-    /// admin set is replaced. Emits an `("admin", "transfer")` event.
+    /// admin set is replaced. Emits an `("admin", "transfer")` event with the
+    /// previous admin set and the new admin. The event data is
+    /// `(old_admins: Vec<Address>, new_admin: Address)`.
     ///
     /// # Auth
     /// Requires a valid Stellar auth signature from `new_admin`.
     /// # Errors
     /// Returns [`ContractError::NoPendingTransfer`] if no transfer is pending,
     /// or the pending proposal names a different address.
+    /// Returns [`ContractError::AdminTransferExpired`] if the proposal is past
+    /// its expiry ledger.
     pub fn accept_admin_transfer(env: Env, new_admin: Address) -> Result<(), ContractError> {
         new_admin.require_auth();
 
-        let pending: Address = env
+        let (pending, expires_at_ledger): (Address, u32) = env
             .storage()
             .instance()
             .get(&DataKey::PendingAdminTransfer)
@@ -383,12 +404,15 @@ impl WatcherRegistry {
         if pending != new_admin {
             return Err(ContractError::NoPendingTransfer);
         }
+        if env.ledger().sequence() > expires_at_ledger {
+            return Err(ContractError::AdminTransferExpired);
+        }
 
         env.storage()
             .instance()
             .remove(&DataKey::PendingAdminTransfer);
 
-        Self::do_transfer_admin(&env, &pending, new_admin);
+        Self::do_transfer_admin(&env, new_admin);
 
         Ok(())
     }
@@ -416,7 +440,7 @@ impl WatcherRegistry {
 
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("cancel")),
-            admin,
+            (admin,),
         );
 
         Ok(())
@@ -457,7 +481,7 @@ impl WatcherRegistry {
 
         env.events().publish(
             (symbol_short!("watcher"), symbol_short!("register")),
-            watcher,
+            (watcher,),
         );
 
         Ok(())
@@ -502,7 +526,7 @@ impl WatcherRegistry {
             Self::increment_watcher_count(&env);
             env.events().publish(
                 (symbol_short!("watcher"), symbol_short!("register")),
-                watcher,
+                (watcher,),
             );
         }
         env.storage().instance().set(&DataKey::Watchers, &current);
@@ -561,7 +585,7 @@ impl WatcherRegistry {
         if removed {
             Self::decrement_watcher_count(&env);
             env.events()
-                .publish((symbol_short!("watcher"), symbol_short!("remove")), watcher);
+                .publish((symbol_short!("watcher"), symbol_short!("remove")), (watcher,));
         }
 
         Ok(())
@@ -643,7 +667,7 @@ impl WatcherRegistry {
 
         env.events().publish(
             (symbol_short!("watcher"), symbol_short!("remove")),
-            old_watcher.clone(),
+            (old_watcher.clone(),),
         );
         env.events().publish(
             (symbol_short!("watcher"), symbol_short!("replace")),
@@ -755,7 +779,7 @@ impl WatcherRegistry {
             let w = watchers.get(i).unwrap();
             if i < remove_count {
                 env.events()
-                    .publish((symbol_short!("watcher"), symbol_short!("remove")), w);
+                    .publish((symbol_short!("watcher"), symbol_short!("remove")), (w,));
             } else {
                 remaining.push_back(w);
             }
@@ -863,7 +887,7 @@ impl WatcherRegistry {
         Self::assert_admin(&env, &caller)?;
         env.storage().instance().set(&DataKey::Paused, &true);
         env.events()
-            .publish((symbol_short!("admin"), symbol_short!("pause")), caller);
+            .publish((symbol_short!("admin"), symbol_short!("pause")), (caller,));
         Ok(())
     }
 
@@ -879,7 +903,7 @@ impl WatcherRegistry {
         Self::assert_admin(&env, &caller)?;
         env.storage().instance().set(&DataKey::Paused, &false);
         env.events()
-            .publish((symbol_short!("admin"), symbol_short!("unpause")), caller);
+            .publish((symbol_short!("admin"), symbol_short!("unpause")), (caller,));
         Ok(())
     }
 
@@ -1080,7 +1104,7 @@ impl WatcherRegistry {
         env.storage().instance().remove(&DataKey::PendingAction);
 
         env.events()
-            .publish((symbol_short!("admin"), symbol_short!("cancel")), caller);
+            .publish((symbol_short!("admin"), symbol_short!("cancel")), (caller,));
 
         Ok(())
     }
@@ -1123,7 +1147,7 @@ impl WatcherRegistry {
         match pending.action {
             AdminAction::AddAdmin(new_admin) => Self::do_add_admin(&env, &caller, new_admin)?,
             AdminAction::TransferAdmin(new_admin) => {
-                Self::do_transfer_admin(&env, &caller, new_admin);
+                Self::do_transfer_admin(&env, new_admin);
             }
             AdminAction::ClearAllWatchers => Self::do_clear_all_watchers(&env),
             AdminAction::SetTimelockDelay(delay) => {
@@ -1143,7 +1167,7 @@ impl WatcherRegistry {
         }
 
         env.events()
-            .publish((symbol_short!("admin"), symbol_short!("execute")), caller);
+            .publish((symbol_short!("admin"), symbol_short!("execute")), (caller,));
 
         Ok(())
     }
@@ -1205,14 +1229,14 @@ impl WatcherRegistry {
     }
 
     /// Replace the entire admin set with `new_admin`.
-    fn do_transfer_admin(env: &Env, caller: &Address, new_admin: Address) {
+    fn do_transfer_admin(env: &Env, new_admin: Address) {
+        let old_admins = Self::load_admins(env);
         let new_admins: Vec<Address> = vec![env, new_admin.clone()];
         env.storage().instance().set(&DataKey::Admins, &new_admins);
 
-        // Emit an auditable on-chain event recording the full admin transfer.
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("transfer")),
-            (caller.clone(), new_admin),
+            (old_admins, new_admin),
         );
     }
 
@@ -1222,7 +1246,7 @@ impl WatcherRegistry {
         for i in 0..watchers.len() {
             let w = watchers.get(i).unwrap();
             env.events()
-                .publish((symbol_short!("watcher"), symbol_short!("remove")), w);
+                .publish((symbol_short!("watcher"), symbol_short!("remove")), (w,));
         }
 
         let empty: Vec<Address> = vec![env];
@@ -1311,7 +1335,22 @@ mod error_codes;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, testutils::Events as _, Env};
+    use soroban_sdk::{
+        testutils::Address as _, testutils::Events as _, Env, FromVal, Symbol, Val,
+    };
+
+    fn assert_last_event_data<T: FromVal<Env, Val>>(
+        env: &Env,
+        category: Symbol,
+        action: Symbol,
+    ) -> T {
+        let events = env.events().all();
+        let (_, topics, data) = events.get(events.len() - 1).unwrap();
+        assert_eq!(topics.len(), 2);
+        assert_eq!(Symbol::from_val(env, &topics.get(0).unwrap()), category);
+        assert_eq!(Symbol::from_val(env, &topics.get(1).unwrap()), action);
+        T::from_val(env, &data)
+    }
 
     fn vec_contains(items: &Vec<Address>, target: &Address) -> bool {
         for i in 0..items.len() {
@@ -1392,24 +1431,114 @@ mod tests {
         assert!(client.is_watcher_authorized(&watcher));
     }
 
-    // 3b. accept_admin_transfer emits an event
+    /// Regression test for #409 — acceptance records the previous admin set.
     #[test]
     fn test_transfer_admin_emits_event() {
         let (env, admin, client) = setup();
+        let second_admin = Address::generate(&env);
         let new_admin = Address::generate(&env);
 
+        client.add_admin(&admin, &second_admin);
         client.propose_admin_transfer(&admin, &new_admin);
         client.accept_admin_transfer(&new_admin);
 
         let events = env.events().all();
-        // Find the transfer event
-        let found = events.iter().any(|e| {
-            // topics are (symbol "admin", symbol "transfer")
-            // we just verify at least one event was emitted after transfer
-            let _ = e;
-            true
+        let transfer_event = events.iter().find(|(_, topics, _)| {
+            topics.len() == 2
+                && Symbol::from_val(&env, &topics.get(0).unwrap())
+                    == soroban_sdk::symbol_short!("admin")
+                && Symbol::from_val(&env, &topics.get(1).unwrap())
+                    == soroban_sdk::symbol_short!("transfer")
         });
-        assert!(found);
+        let (_, _, data) = transfer_event.expect("admin.transfer event must be emitted");
+        let emitted_transfer: (Vec<Address>, Address) = FromVal::from_val(&env, &data);
+        let previous_admins = soroban_sdk::vec![&env, admin, second_admin];
+        assert_eq!(emitted_transfer, (previous_admins, new_admin));
+    }
+
+    #[test]
+    fn test_single_address_events_encode_singleton_tuples() {
+        let (env, admin, client) = setup();
+        let admin_init: (Address,) =
+            assert_last_event_data(
+                &env,
+                soroban_sdk::symbol_short!("admin"),
+                soroban_sdk::symbol_short!("init"),
+            );
+        assert_eq!(admin_init, (admin.clone(),));
+
+        let watcher = Address::generate(&env);
+        let remaining_watcher = Address::generate(&env);
+        client.register_watcher(&admin, &watcher);
+        let registered: (Address,) = assert_last_event_data(
+            &env,
+            soroban_sdk::symbol_short!("watcher"),
+            soroban_sdk::symbol_short!("register"),
+        );
+        assert_eq!(registered, (watcher.clone(),));
+
+        client.register_watcher(&admin, &remaining_watcher);
+        client.remove_watcher(&admin, &watcher);
+        let removed: (Address,) = assert_last_event_data(
+            &env,
+            soroban_sdk::symbol_short!("watcher"),
+            soroban_sdk::symbol_short!("remove"),
+        );
+        assert_eq!(removed, (watcher,));
+
+        let old_watcher = Address::generate(&env);
+        let new_watcher = Address::generate(&env);
+        client.register_watcher(&admin, &old_watcher);
+        client.replace_watcher(&admin, &old_watcher, &new_watcher);
+        let replaced: (Address, Address) = assert_last_event_data(
+            &env,
+            soroban_sdk::symbol_short!("watcher"),
+            soroban_sdk::symbol_short!("replace"),
+        );
+        assert_eq!(replaced, (old_watcher, new_watcher));
+
+        client.pause(&admin);
+        let paused: (Address,) = assert_last_event_data(
+            &env,
+            soroban_sdk::symbol_short!("admin"),
+            soroban_sdk::symbol_short!("pause"),
+        );
+        assert_eq!(paused, (admin.clone(),));
+        client.unpause(&admin);
+        let unpaused: (Address,) = assert_last_event_data(
+            &env,
+            soroban_sdk::symbol_short!("admin"),
+            soroban_sdk::symbol_short!("unpause"),
+        );
+        assert_eq!(unpaused, (admin.clone(),));
+
+        let next_admin = Address::generate(&env);
+        client.propose_admin_transfer(&admin, &next_admin);
+        client.cancel_admin_transfer(&admin);
+        let cancelled_transfer: (Address,) = assert_last_event_data(
+            &env,
+            soroban_sdk::symbol_short!("admin"),
+            soroban_sdk::symbol_short!("cancel"),
+        );
+        assert_eq!(cancelled_transfer, (admin.clone(),));
+
+        client.propose_admin_action(&admin, &AdminAction::ClearAllWatchers);
+        client.cancel_admin_action(&admin);
+        let cancelled: (Address,) = assert_last_event_data(
+            &env,
+            soroban_sdk::symbol_short!("admin"),
+            soroban_sdk::symbol_short!("cancel"),
+        );
+        assert_eq!(cancelled, (admin.clone(),));
+
+        client.propose_admin_action(&admin, &AdminAction::SetTimelockDelay(0));
+        client.execute_admin_action(&admin);
+        let executed: (Address,) = assert_last_event_data(
+            &env,
+            soroban_sdk::symbol_short!("admin"),
+            soroban_sdk::symbol_short!("execute"),
+        );
+        assert_eq!(executed, (admin,));
     }
 
     // 4. Unauthorized register rejected
@@ -2089,14 +2218,18 @@ mod tests {
         client.remove_watcher(&admin, &watcher);
 
         let events = env.events().all();
-        // Find an event with exactly 2 topics (watcher.remove shape)
-        let remove_event = events.iter().find(|(_, topics, _)| topics.len() == 2);
+        let remove_event = events.iter().find(|(_, topics, _)| {
+            topics.len() == 2
+                && Symbol::from_val(&env, &topics.get(0).unwrap())
+                    == soroban_sdk::symbol_short!("watcher")
+                && Symbol::from_val(&env, &topics.get(1).unwrap())
+                    == soroban_sdk::symbol_short!("remove")
+        });
         assert!(remove_event.is_some(), "expected a watcher.remove event");
 
-        // Verify data is the watcher address
         let (_, _, data) = remove_event.unwrap();
-        let emitted_watcher: Address = soroban_sdk::FromVal::from_val(&env, &data);
-        assert_eq!(emitted_watcher, watcher);
+        let emitted_watcher: (Address,) = soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(emitted_watcher, (watcher,));
     }
 
     // 24. remove_watcher on a non-registered address is a no-op — no event emitted
@@ -2421,6 +2554,15 @@ mod tests {
         }
         assert_eq!(client.get_watcher_count(), MAX_WATCHERS);
 
+        assert_eq!(
+            client
+                .try_register_watcher(&admin, &Address::generate(&env))
+                .unwrap_err()
+                .unwrap(),
+            ContractError::MaxWatchersReached
+        );
+    }
+
     #[test]
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_propose_admin_transfer_requires_auth() {
@@ -2512,6 +2654,12 @@ mod tests {
         assert_eq!(
             client
                 .try_upgrade(&attacker, &wasm_hash)
+                .unwrap_err()
+                .unwrap(),
+            ContractError::Unauthorized
+        );
+    }
+
     // ── register_watchers (batch) tests ──────────────────────────────────────
 
     // 31. Happy path — register_watchers registers all new addresses
@@ -2870,6 +3018,8 @@ mod tests {
 
         assert_eq!(client.get_watchers().len(), 0);
         assert_eq!(client.get_watcher_count(), 0);
+    }
+
     // 34. register_watchers emits one event per newly-added watcher
     #[test]
     fn test_register_watchers_emits_one_event_per_watcher() {
@@ -2882,6 +3032,8 @@ mod tests {
         client.register_watchers(&admin, &vec![&env, w1, w2]);
 
         assert_eq!(env.events().all().len(), 2);
+    }
+
     // 31. self-replace (old == new) is a no-op — no spurious watcher.remove
     #[test]
     fn test_replace_watcher_self_replace_emits_no_events() {
@@ -2898,6 +3050,8 @@ mod tests {
         );
         assert!(client.is_watcher_authorized(&w));
         assert_eq!(client.get_watcher_count(), 1);
+    }
+
     // ── Role policy tests ─────────────────────────────────────────────────────
 
     // 31. An address may hold both the admin and watcher roles at once.

@@ -1,0 +1,22 @@
+[package]
+name = "watcher-registry-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+arbitrary = { version = "1.3.2", features = ["derive"] }
+watcher-registry = { path = "..", features = ["testutils"] }
+soroban-sdk = { version = "25.3.0", features = ["testutils"] }
+
+[[bin]]
+name = "watcher_registry_ops"
+path = "fuzz_targets/watcher_registry_ops.rs"
+test = false
+doc = false
+
+[workspace]

@@ -28,7 +28,8 @@ def update_deployments_content(
     watcher_hash: str,
     tag: str = "",
     notes: str = "",
-    date_str: str = ""
+    date_str: str = "",
+    cli_version: str = "",
 ) -> str:
     if not date_str:
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -44,28 +45,19 @@ def update_deployments_content(
 
     section_text = match.group(1)
 
-    # Replace Alert Registry row in this section
-    alert_row_pattern = r"(\| Alert Registry \| )`[^`]+`(\| )`[^`]+`"
-    if re.search(alert_row_pattern, section_text):
-        new_section = re.sub(alert_row_pattern, rf"\1`{alert_id}`\2`{alert_hash}`", section_text)
-    else:
-        # Fallback if placeholder formatting differs
-        new_section = re.sub(
-            r"(\| Alert Registry \| )`[^`]+`",
-            rf"\1`{alert_id}` | `{alert_hash}`",
-            section_text
-        )
-
-    # Replace Watcher Registry row in this section
-    watcher_row_pattern = r"(\| Watcher Registry \| )`[^`]+`(\| )`[^`]+`"
-    if re.search(watcher_row_pattern, new_section):
-        new_section = re.sub(watcher_row_pattern, rf"\1`{watcher_id}`\2`{watcher_hash}`", new_section)
-    else:
-        new_section = re.sub(
-            r"(\| Watcher Registry \| )`[^`]+`",
-            rf"\1`{watcher_id}` | `{watcher_hash}`",
-            new_section
-        )
+    # Replace each complete table row so old cell contents cannot be left behind.
+    new_section, alert_count = re.subn(
+        r"(?m)^\| Alert Registry \|.*$",
+        f"| Alert Registry | `{alert_id}` | `{alert_hash}` |",
+        section_text,
+    )
+    new_section, watcher_count = re.subn(
+        r"(?m)^\| Watcher Registry \|.*$",
+        f"| Watcher Registry | `{watcher_id}` | `{watcher_hash}` |",
+        new_section,
+    )
+    if alert_count != 1 or watcher_count != 1:
+        raise ValueError(f"Expected one Alert Registry and Watcher Registry row in the {network_capitalized} section")
 
     content = content[:match.start()] + new_section + content[match.end():]
 
@@ -74,8 +66,8 @@ def update_deployments_content(
     # | Date | Network | Contract | Address | WASM Hash | Notes |
     row_note = notes if notes else (tag if tag else "Automated deployment")
     history_rows = (
-        f"| {date_str} | {network_capitalized} | Alert Registry | `{alert_id}` | `{alert_hash}` | {row_note} |\n"
-        f"| {date_str} | {network_capitalized} | Watcher Registry | `{watcher_id}` | `{watcher_hash}` | {row_note} |\n"
+        f"| {date_str} | {network_capitalized} | Alert Registry | `{alert_id}` | `{alert_hash}` | {cli_version} | {row_note} |\n"
+        f"| {date_str} | {network_capitalized} | Watcher Registry | `{watcher_id}` | `{watcher_hash}` | {cli_version} | {row_note} |\n"
     )
 
     # Match exact placeholder row with any number of dashes
@@ -102,6 +94,7 @@ def main():
     parser.add_argument("--watcher-id", required=True)
     parser.add_argument("--alert-hash", default="TODO")
     parser.add_argument("--watcher-hash", default="TODO")
+    parser.add_argument("--cli-version", default="")
     parser.add_argument("--tag", default="")
     parser.add_argument("--notes", default="")
     parser.add_argument("--file", default="DEPLOYMENTS.md")
@@ -121,6 +114,7 @@ def main():
         watcher_id=args.watcher_id,
         alert_hash=args.alert_hash,
         watcher_hash=args.watcher_hash,
+        cli_version=args.cli_version,
         tag=args.tag,
         notes=args.notes
     )
