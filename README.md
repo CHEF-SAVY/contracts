@@ -373,6 +373,16 @@ stellar contract invoke \
   --offset 0 \
   --limit 10
 
+# Query only active alerts for a contract, one page at a time (#384)
+stellar contract invoke \
+  --id <ALERT_REGISTRY_CONTRACT_ID> \
+  --network testnet \
+  -- get_active_contract_alerts_paged \
+  --querier <QUERIER_ADDRESS> \
+  --target_contract <WATCHED_CONTRACT_ADDRESS> \
+  --offset 0 \
+  --limit 10
+
 # Query alerts modified since ledger timestamp (incremental sync)
 stellar contract invoke \
   --id <ALERT_REGISTRY_CONTRACT_ID> \

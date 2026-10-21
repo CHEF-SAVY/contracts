@@ -44,7 +44,6 @@ jobs:
           targets: wasm32-unknown-unknown
 
       # Issue #285, #286 — Use prebuilt pinned Stellar CLI instead of building from source
-      - name: Install Stellar CLI
       # Issue #285 — Pin Stellar CLI version
       - name: Install Stellar CLI
         env:

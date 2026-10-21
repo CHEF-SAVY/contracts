@@ -1,7 +1,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _},
-    Address, Env,
+    Address, Env, FromVal,
 };
 
 fn setup() -> (Env, Address, WatcherRegistryClient<'static>) {
@@ -116,14 +116,21 @@ fn test_regression_clear_all_watchers_emits_one_event_per_removed_watcher() {
     client.clear_all_watchers(&admin);
 
     let events = env.events().all();
-    // Should have emitted 2 remove events (one for each removed watcher)
-    assert_eq!(events.len(), 2);
+    let mut removed = 0;
     for i in 0..events.len() {
         let (_, topics, data) = events.get(i).unwrap();
-        assert_eq!(topics.len(), 2);
-        let emitted_addr: Address = soroban_sdk::FromVal::from_val(&env, &data);
-        assert!(emitted_addr == w1 || emitted_addr == w2);
+        if topics.len() == 2
+            && soroban_sdk::Symbol::from_val(&env, &topics.get(0).unwrap())
+                == soroban_sdk::symbol_short!("watcher")
+            && soroban_sdk::Symbol::from_val(&env, &topics.get(1).unwrap())
+                == soroban_sdk::symbol_short!("remove")
+        {
+            let (emitted_addr,): (Address,) = soroban_sdk::FromVal::from_val(&env, &data);
+            assert!(emitted_addr == w1 || emitted_addr == w2);
+            removed += 1;
+        }
     }
+    assert_eq!(removed, 2);
 
     assert_eq!(client.get_watcher_count(), 0);
     assert_eq!(client.get_watchers().len(), 0);
@@ -144,4 +151,31 @@ fn test_regression_remove_last_admin_lockout() {
         "Removing the sole admin must return LastAdmin error"
     );
     assert_eq!(client.get_admins().len(), 1);
+}
+
+/// Regression test for #370: an admin transfer proposal cannot be accepted
+/// after `ADMIN_TRANSFER_EXPIRY_LEDGERS`.
+#[test]
+fn test_regression_admin_transfer_proposal_expires() {
+    use soroban_sdk::testutils::Ledger as _;
+
+    let (env, admin, client) = setup();
+    let new_admin = Address::generate(&env);
+    client.propose_admin_transfer(&admin, &new_admin);
+
+    // One ledger past the expiry ledger.
+    env.ledger()
+        .with_mut(|li| li.sequence_number += ADMIN_TRANSFER_EXPIRY_LEDGERS + 1);
+    assert_eq!(
+        client
+            .try_accept_admin_transfer(&new_admin)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::AdminTransferExpired
+    );
+
+    // A fresh proposal replaces the expired one and can be accepted.
+    client.propose_admin_transfer(&admin, &new_admin);
+    client.accept_admin_transfer(&new_admin);
+    assert!(client.is_admin(&new_admin));
 }

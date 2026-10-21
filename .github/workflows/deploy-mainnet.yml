@@ -28,13 +28,28 @@ jobs:
         with:
           ref: ${{ github.event.inputs.release_tag }}
 
+      - name: Require a CHANGELOG section for this tag
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+        run: bash scripts/check-changelog-release.sh "$RELEASE_TAG"
+
       - name: Verify release tag
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
         run: |
-          echo "Deploying ref: ${{ github.event.inputs.release_tag }}"
-          git describe --exact-match --tags HEAD || {
-            echo "ERROR: Ref ${{ github.event.inputs.release_tag }} is not a tagged release"
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Invalid release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          checked_out_tag=$(git describe --exact-match --tags HEAD) || {
+            echo "ERROR: Ref $RELEASE_TAG is not a tagged release" >&2
             exit 1
           }
+          if [[ "$checked_out_tag" != "$RELEASE_TAG" ]]; then
+            echo "ERROR: Checked out tag $checked_out_tag does not match $RELEASE_TAG" >&2
+            exit 1
+          fi
+          echo "Deploying ref: $RELEASE_TAG"
 
       - name: Resolve pinned toolchain
         id: rust
@@ -81,18 +96,12 @@ jobs:
         run: |
           OUTPUT=$(bash scripts/deploy.sh --network mainnet 2>&1)
           echo "$OUTPUT"
-          ALERT_ID=$(echo "$OUTPUT" | grep "Alert Registry deployed:" | awk '{print $NF}')
-          WATCHER_ID=$(echo "$OUTPUT" | grep "Watcher Registry deployed:" | awk '{print $NF}')
-          ALERT_HASH=$(echo "$OUTPUT" | grep "Alert Registry:" | tail -1 | awk '{print $NF}')
-          WATCHER_HASH=$(echo "$OUTPUT" | grep "Watcher Registry:" | tail -1 | awk '{print $NF}')
-
-          echo "alert_id=$ALERT_ID" >> "$GITHUB_OUTPUT"
-          echo "watcher_id=$WATCHER_ID" >> "$GITHUB_OUTPUT"
-          echo "alert_hash=$ALERT_HASH" >> "$GITHUB_OUTPUT"
-          echo "watcher_hash=$WATCHER_HASH" >> "$GITHUB_OUTPUT"
+          python3 scripts/deployment_outputs.py <<< "$OUTPUT" >> "$GITHUB_OUTPUT"
 
       # Issue #289 — Use update_deployments.py script to reliably update Markdown tables
       - name: Update DEPLOYMENTS.md
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
         run: |
           python3 scripts/update_deployments.py \
             --network mainnet \
@@ -100,6 +109,8 @@ jobs:
             --watcher-id "${{ steps.deploy.outputs.watcher_id }}" \
             --alert-hash "${{ steps.deploy.outputs.alert_hash }}" \
             --watcher-hash "${{ steps.deploy.outputs.watcher_hash }}" \
+            --tag "$RELEASE_TAG" \
+            --cli-version "v28.0.0" \
             --tag "${{ github.event.inputs.release_tag }}" \
             --notes "Production mainnet release"
 
@@ -108,7 +119,7 @@ jobs:
         uses: peter-evans/create-pull-request@v8
         with:
           commit-message: "chore: update DEPLOYMENTS.md for mainnet deployment (${{ github.event.inputs.release_tag }})"
-          branch: "deploy/mainnet"
+          branch: "deploy/mainnet-${{ github.event.inputs.release_tag }}"
           title: "chore: update DEPLOYMENTS.md for mainnet deployment (${{ github.event.inputs.release_tag }})"
           body: |
             Automated update of `DEPLOYMENTS.md` after mainnet deployment.
