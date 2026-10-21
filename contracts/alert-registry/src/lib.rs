@@ -91,6 +91,13 @@ pub enum DataKey {
     /// number. Formerly `OwnerActiveCount`; entries written under that key are
     /// migrated on first read (see `AlertRegistry::owner_live_count`).
     OwnerLiveCount(Address),
+    /// Stores the number of currently **active** (non-removed, unexpired) alerts
+    /// owned by a given address, maintained incrementally alongside
+    /// [`DataKey::OwnerIndex`] so [`AlertRegistry::get_active_alert_count`] never
+    /// has to rescan the owner's full index.
+    ///
+    /// "Active" means non-removed AND active=true (not deactivated by owner or admin).
+    OwnerActiveCount(Address),
     /// Stores the list of alert IDs watching a given contract address.
     ContractIndex(Address),
     /// Stores the number of currently live (non-removed) alerts targeting
@@ -1015,12 +1022,24 @@ impl AlertRegistry {
             return Err(ContractError::AlertSuspended);
         }
 
+        let was_active = config.active;
         config.rules = rules;
         config.active = active;
         config.updated_at = env.ledger().timestamp();
         config.updated_ledger = env.ledger().sequence();
 
         Self::persist_alert(&env, config_id, &config);
+
+        // Update active count if active status changed
+        if was_active != active {
+            let owner = config.owner.clone();
+            let active_count = Self::owner_active_count(&env, &owner);
+            if active {
+                Self::set_owner_active_count(&env, &owner, active_count + 1);
+            } else {
+                Self::set_owner_active_count(&env, &owner, active_count.saturating_sub(1));
+            }
+        }
 
         env.events().publish(
             (symbol_short!("alert"), symbol_short!("update")),
@@ -1064,10 +1083,22 @@ impl AlertRegistry {
             return Err(ContractError::AlertSuspended);
         }
 
+        let was_active = config.active;
         config.active = active;
         config.updated_at = env.ledger().timestamp();
         config.updated_ledger = env.ledger().sequence();
         Self::persist_alert(&env, config_id, &config);
+
+        // Update active count if active status changed
+        if was_active != active {
+            let owner = config.owner.clone();
+            let active_count = Self::owner_active_count(&env, &owner);
+            if active {
+                Self::set_owner_active_count(&env, &owner, active_count + 1);
+            } else {
+                Self::set_owner_active_count(&env, &owner, active_count.saturating_sub(1));
+            }
+        }
 
         env.events().publish(
             (symbol_short!("alert"), symbol_short!("update")),
@@ -1487,6 +1518,7 @@ impl AlertRegistry {
             .get(&DataKey::Alert(config_id))
             .ok_or(ContractError::AlertNotFound)?;
 
+        let was_active = config.active;
         config.active = false;
         config.updated_at = env.ledger().timestamp();
         config.updated_ledger = env.ledger().sequence();
@@ -1495,6 +1527,13 @@ impl AlertRegistry {
             .persistent()
             .set(&DataKey::AdminSuspended(config_id), &true);
         Self::persist_alert(&env, config_id, &config);
+
+        // Update active count if the alert was active
+        if was_active {
+            let owner = config.owner.clone();
+            let active_count = Self::owner_active_count(&env, &owner);
+            Self::set_owner_active_count(&env, &owner, active_count.saturating_sub(1));
+        }
 
         env.events().publish(
             (symbol_short!("alert"), symbol_short!("admin_off")),
@@ -2123,6 +2162,11 @@ impl AlertRegistry {
                 }
             }
         }
+        // Update active count for bulk deactivation
+        if count > 0 {
+            let active_count = Self::owner_active_count(&env, &caller);
+            Self::set_owner_active_count(&env, &caller, active_count.saturating_sub(count));
+        }
         let cursor_key = DataKey::DeactivationCursor(caller.clone());
         if end < ids.len() {
             env.storage().persistent().set(&cursor_key, &end);
@@ -2375,27 +2419,17 @@ impl AlertRegistry {
     /// excluded, so the result matches the `active` flag of the alerts
     /// returned by [`AlertRegistry::get_alerts_by_owner`].
     ///
-    /// Scans the owner's [`DataKey::OwnerIndex`] and reads the cheap
-    /// [`DataKey::AlertActive`] flag for each entry, so it reflects both
-    /// removals and deactivations. If you only need the number of live
-    /// (non-removed) alerts regardless of the `active` flag, use
-    /// [`AlertRegistry::get_non_removed_alert_count`], which is an O(1) lookup.
+    /// Backed by a running [`DataKey::OwnerActiveCount`] counter maintained
+    /// incrementally alongside [`DataKey::OwnerIndex`] by
+    /// [`AlertRegistry::push_owner_index`], [`AlertRegistry::remove_from_owner_index`],
+    /// [`AlertRegistry::update_alert`], [`AlertRegistry::set_alert_active`],
+    /// [`AlertRegistry::deactivate_all_alerts`], and
+    /// [`AlertRegistry::deactivate_alert_by_admin`], so this is an O(1) lookup
+    /// regardless of how many alerts `owner` has ever registered — it never
+    /// rescans the owner's index.
     #[must_use]
     pub fn get_active_alert_count(env: Env, owner: Address) -> u32 {
-        let ids = Self::owner_index(&env, &owner);
-        let mut count: u32 = 0;
-        for i in 0..ids.len() {
-            let id = ids.get(i).unwrap();
-            if env
-                .storage()
-                .persistent()
-                .get::<DataKey, bool>(&DataKey::AlertActive(id))
-                == Some(true)
-            {
-                count += 1;
-            }
-        }
-        count
+        Self::owner_active_count(&env, &owner)
     }
 
     /// Get the number of currently live (non-removed) alerts owned by `owner`.
@@ -2806,6 +2840,26 @@ impl AlertRegistry {
         );
     }
 
+    /// Read the running per-owner **active**-alert counter, or `0` if unset.
+    fn owner_active_count(env: &Env, owner: &Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<DataKey, u32>(&DataKey::OwnerActiveCount(owner.clone()))
+            .unwrap_or(0)
+    }
+
+    /// Persist the running per-owner active-alert counter with a refreshed TTL.
+    fn set_owner_active_count(env: &Env, owner: &Address, count: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::OwnerActiveCount(owner.clone()), &count);
+        env.storage().persistent().extend_ttl(
+            &DataKey::OwnerActiveCount(owner.clone()),
+            DEFAULT_TTL,
+            DEFAULT_TTL,
+        );
+    }
+
     /// Append `id` to the owner's index and persist it with a refreshed TTL.
     fn push_owner_index(env: &Env, owner: &Address, id: u64) -> Result<(), ContractError> {
         let mut ids = Self::owner_index(env, owner);
@@ -2823,8 +2877,11 @@ impl AlertRegistry {
             DEFAULT_TTL,
             DEFAULT_TTL,
         );
-        let count = Self::owner_live_count(env, owner);
-        Self::set_owner_live_count(env, owner, count + 1);
+        let live_count = Self::owner_live_count(env, owner);
+        Self::set_owner_live_count(env, owner, live_count + 1);
+        // New alerts are active by default, so increment active count too
+        let active_count = Self::owner_active_count(env, owner);
+        Self::set_owner_active_count(env, owner, active_count + 1);
         Ok(())
     }
 
@@ -2855,10 +2912,17 @@ impl AlertRegistry {
         let ids = Self::owner_index(env, owner);
         let mut updated: Vec<u64> = vec![env];
         let mut removed = false;
+        let mut was_active = false;
         for i in 0..ids.len() {
             let v = ids.get(i).unwrap();
             if v == id {
                 removed = true;
+                // Check if the alert was active before removing
+                was_active = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, bool>(&DataKey::AlertActive(id))
+                    == Some(true);
             } else {
                 updated.push_back(v);
             }
@@ -2875,8 +2939,12 @@ impl AlertRegistry {
             .persistent()
             .remove(&DataKey::DeactivationCursor(owner.clone()));
         if removed {
-            let count = Self::owner_live_count(env, owner);
-            Self::set_owner_live_count(env, owner, count.saturating_sub(1));
+            let live_count = Self::owner_live_count(env, owner);
+            Self::set_owner_live_count(env, owner, live_count.saturating_sub(1));
+            if was_active {
+                let active_count = Self::owner_active_count(env, owner);
+                Self::set_owner_active_count(env, owner, active_count.saturating_sub(1));
+            }
         }
     }
 
