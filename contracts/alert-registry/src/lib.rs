@@ -538,7 +538,7 @@ impl AlertRegistry {
     ///
     /// Requires `new_admin`'s own signature, proving key control before
     /// `ADMIN` storage is updated. Emits `(Symbol("admin"), Symbol("transfer"))`
-    /// with data `(new_admin: Address)` once the handover completes.
+    /// with data `(old_admin: Address, new_admin: Address)` once the handover completes.
     ///
     /// # Auth
     /// Requires a valid Stellar auth signature from `new_admin`.
@@ -557,6 +557,7 @@ impl AlertRegistry {
     ///
     /// # Events
     /// Emits `(Symbol("admin"), Symbol("transfer"))` with data
+    /// `(old_admin: Address, new_admin: Address)`.
     /// `(old_admin: Address, new_admin: Address)`, the same shape as `transfer_admin`.
     pub fn accept_admin_transfer(env: Env, new_admin: Address) -> Result<(), ContractError> {
         new_admin.require_auth();
@@ -581,9 +582,14 @@ impl AlertRegistry {
             .get(&instance_key::ADMIN)
             .ok_or(ContractError::NotInitialized)?;
 
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&instance_key::ADMIN)
+            .ok_or(ContractError::NotInitialized)?;
         env.storage()
             .instance()
-            .set(&symbol_short!("ADMIN"), &new_admin);
+            .set(&instance_key::ADMIN, &new_admin);
         env.storage()
             .instance()
             .remove(&DataKey::PendingAdminTransfer);
@@ -757,6 +763,7 @@ impl AlertRegistry {
         env.storage().instance().set(&instance_key::PAUSED, &true);
         Self::extend_instance_ttl(&env);
         env.events()
+            .publish((symbol_short!("admin"), symbol_short!("pause")), (admin,));
             .publish((symbol_short!("admin"), symbol_short!("pause")), caller);
         Ok(())
     }
@@ -778,7 +785,7 @@ impl AlertRegistry {
         env.storage().instance().set(&instance_key::PAUSED, &false);
         Self::extend_instance_ttl(&env);
         env.events()
-            .publish((symbol_short!("admin"), symbol_short!("unpause")), admin);
+            .publish((symbol_short!("admin"), symbol_short!("unpause")), (admin,));
         Ok(())
     }
 
@@ -5046,7 +5053,7 @@ mod tests {
         );
     }
 
-    // propose emits admin.propose event; accept emits admin.transfer event
+    /// Regression test for #367 — both admin.transfer paths use a two-address tuple.
     #[test]
     fn test_propose_and_accept_admin_transfer_events() {
         use soroban_sdk::{symbol_short, testutils::Events as _, FromVal, Symbol};
@@ -5071,8 +5078,10 @@ mod tests {
         let events = env.events().all();
         let transfer_event = events.iter().find(|(_, topics, _)| {
             topics.len() == 2
-                && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("admin")
-                && Symbol::from_val(&env, &topics.get(1).unwrap()) == symbol_short!("transfer")
+                && Symbol::from_val(&env, &topics.get(0).unwrap())
+                    == soroban_sdk::symbol_short!("admin")
+                && Symbol::from_val(&env, &topics.get(1).unwrap())
+                    == soroban_sdk::symbol_short!("transfer")
         });
         assert!(
             transfer_event.is_some(),
@@ -5080,16 +5089,18 @@ mod tests {
         );
 
         let (_, _, data) = transfer_event.unwrap();
+        let emitted_transfer: (Address, Address) = FromVal::from_val(&env, &data);
+        assert_eq!(emitted_transfer, (admin, new_admin));
         let (emitted_old_admin, emitted_new_admin): (Address, Address) =
             FromVal::from_val(&env, &data);
         assert_eq!(emitted_old_admin, admin);
         assert_eq!(emitted_new_admin, new_admin);
     }
 
-    // cancel emits admin.cancel event
+    /// Regression test for #367 — admin.cancel data remains a one-address tuple.
     #[test]
     fn test_cancel_admin_transfer_emits_event() {
-        use soroban_sdk::{symbol_short, testutils::Events as _, Symbol};
+        use soroban_sdk::{symbol_short, testutils::Events as _, FromVal, Symbol};
 
         let (env, client) = setup();
         let admin = Address::generate(&env);
@@ -5106,6 +5117,45 @@ mod tests {
                 && Symbol::from_val(&env, &topics.get(1).unwrap()) == symbol_short!("cancel")
         });
         assert!(cancel_event.is_some(), "admin.cancel event must be emitted");
+        let (_, _, data) = cancel_event.unwrap();
+        let emitted_admin: (Address,) = FromVal::from_val(&env, &data);
+        assert_eq!(emitted_admin, (admin,));
+    }
+
+    #[test]
+    fn test_pause_events_encode_admin_as_singleton_tuples() {
+        use soroban_sdk::{symbol_short, testutils::Events as _, FromVal, Symbol};
+
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        let events = env.events().all();
+        let (_, _, init_data) = events.get(events.len() - 1).unwrap();
+        let emitted_init: (Address,) = FromVal::from_val(&env, &init_data);
+        assert_eq!(emitted_init, (admin.clone(),));
+
+        client.pause(&admin);
+
+        let events = env.events().all();
+        let pause_event = events.iter().find(|(_, topics, _)| {
+            topics.len() == 2
+                && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("admin")
+                && Symbol::from_val(&env, &topics.get(1).unwrap()) == symbol_short!("pause")
+        });
+        let (_, _, data) = pause_event.expect("admin.pause event must be emitted");
+        let emitted_admin: (Address,) = FromVal::from_val(&env, &data);
+        assert_eq!(emitted_admin, (admin.clone(),));
+
+        client.unpause(&admin);
+        let events = env.events().all();
+        let unpause_event = events.iter().find(|(_, topics, _)| {
+            topics.len() == 2
+                && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("admin")
+                && Symbol::from_val(&env, &topics.get(1).unwrap()) == symbol_short!("unpause")
+        });
+        let (_, _, data) = unpause_event.expect("admin.unpause event must be emitted");
+        let emitted_admin: (Address,) = FromVal::from_val(&env, &data);
+        assert_eq!(emitted_admin, (admin,));
     }
 
     // auth-failure: propose_admin_transfer requires admin's auth signature

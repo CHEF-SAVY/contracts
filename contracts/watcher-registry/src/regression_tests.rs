@@ -1,7 +1,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _},
-    Address, Env,
+    Address, Env, FromVal,
 };
 
 fn setup() -> (Env, Address, WatcherRegistryClient<'static>) {
@@ -116,14 +116,21 @@ fn test_regression_clear_all_watchers_emits_one_event_per_removed_watcher() {
     client.clear_all_watchers(&admin);
 
     let events = env.events().all();
-    // Should have emitted 2 remove events (one for each removed watcher)
-    assert_eq!(events.len(), 2);
+    let mut removed = 0;
     for i in 0..events.len() {
         let (_, topics, data) = events.get(i).unwrap();
-        assert_eq!(topics.len(), 2);
-        let emitted_addr: Address = soroban_sdk::FromVal::from_val(&env, &data);
-        assert!(emitted_addr == w1 || emitted_addr == w2);
+        if topics.len() == 2
+            && soroban_sdk::Symbol::from_val(&env, &topics.get(0).unwrap())
+                == soroban_sdk::symbol_short!("watcher")
+            && soroban_sdk::Symbol::from_val(&env, &topics.get(1).unwrap())
+                == soroban_sdk::symbol_short!("remove")
+        {
+            let (emitted_addr,): (Address,) = soroban_sdk::FromVal::from_val(&env, &data);
+            assert!(emitted_addr == w1 || emitted_addr == w2);
+            removed += 1;
+        }
     }
+    assert_eq!(removed, 2);
 
     assert_eq!(client.get_watcher_count(), 0);
     assert_eq!(client.get_watchers().len(), 0);
