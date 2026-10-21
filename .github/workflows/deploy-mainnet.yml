@@ -28,6 +28,11 @@ jobs:
         with:
           ref: ${{ github.event.inputs.release_tag }}
 
+      - name: Require a CHANGELOG section for this tag
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+        run: bash scripts/check-changelog-release.sh "$RELEASE_TAG"
+
       - name: Verify release tag
         run: |
           echo "Deploying ref: ${{ github.event.inputs.release_tag }}"
@@ -109,7 +114,7 @@ jobs:
         uses: peter-evans/create-pull-request@v8
         with:
           commit-message: "chore: update DEPLOYMENTS.md for mainnet deployment (${{ github.event.inputs.release_tag }})"
-          branch: "deploy/mainnet"
+          branch: "deploy/mainnet-${{ github.event.inputs.release_tag }}"
           title: "chore: update DEPLOYMENTS.md for mainnet deployment (${{ github.event.inputs.release_tag }})"
           body: |
             Automated update of `DEPLOYMENTS.md` after mainnet deployment.
