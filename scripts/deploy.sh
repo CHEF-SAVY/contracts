@@ -51,17 +51,6 @@ WATCHER_ID=$(stellar contract deploy \
   --source "$IDENTITY" \
   --network "$NETWORK" \
   --rpc-url "$RPC_URL" \
-  --network-passphrase "$NETWORK_PASSPHRASE")
-echo "Watcher Registry deployed: $WATCHER_ID"
-
-ADMIN_ADDRESS="${ADMIN_ADDRESS:-$(stellar keys address "$IDENTITY")}"
-
-echo "==> Initializing Watcher Registry..."
-stellar contract invoke \
-  --id "$WATCHER_ID" \
-  --source "$IDENTITY" \
-  --network "$NETWORK" \
-  --rpc-url "$RPC_URL" \
   --network-passphrase "$NETWORK_PASSPHRASE" \
   -- --admin "$ADMIN_ADDRESS")
 echo "Watcher Registry deployed: $WATCHER_ID"
