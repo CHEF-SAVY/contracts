@@ -4050,6 +4050,9 @@ mod tests {
         assert_eq!(
             alert_client.get_watcher_registry().unwrap(),
             watcher_contract_id
+        );
+    }
+
     // 17b. clear_watcher_registry disables gating; set_watcher_registry can
     // re-enable it afterward.
     #[test]
