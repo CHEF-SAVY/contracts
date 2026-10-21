@@ -54,6 +54,11 @@ pub const MAX_TTL: u32 = 535_680;
 /// recipient to accept (approximately 7 days at the nominal 5-second ledger
 /// close time). After that it can only be cancelled or replaced.
 pub const ALERT_TRANSFER_EXPIRY_LEDGERS: u32 = 120_960;
+
+/// Number of ledgers a proposed admin transfer stays open for the proposed
+/// admin to accept (approximately 7 days at the nominal 5-second ledger close
+/// time). After that it can only be cancelled or replaced.
+pub const ADMIN_TRANSFER_EXPIRY_LEDGERS: u32 = 120_960;
 /// Maximum number of owner-index entries processed by one bulk deactivation call.
 pub const MAX_DEACTIVATIONS_PER_CALL: u32 = 50;
 /// Threshold, in ledgers, below which the contract's instance entry is
@@ -219,6 +224,9 @@ pub enum ContractError {
     /// Returned by `propose_webhook` when the proposed hash is already live
     /// or already pending.
     NoopWebhookRotation = 23,
+    /// Returned by `accept_admin_transfer` when the pending admin transfer is
+    /// past its expiry ledger.
+    AdminTransferExpired = 24,
     /// Returned by `pause` when called by an address that is neither the
     /// admin nor the configured guardian.
     NotAGuardian = 24,
@@ -311,6 +319,8 @@ pub struct RegistryConfiguration {
     pub global_alert_limit: u32,
     /// Configured watcher registry, if watcher-gating is enabled.
     pub watcher_registry: Option<Address>,
+    /// Address of the unexpired pending admin transfer, if one is in flight.
+    pub pending_admin: Option<Address>,
     /// Optional guardian address that may call `pause` but not `unpause`.
     pub guardian: Option<Address>,
 }
@@ -376,6 +386,7 @@ impl AlertRegistry {
     /// Running atomically with deployment prevents front-running the initialization window.
     pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&instance_key::ADMIN, &admin);
+        Self::extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("init")),
@@ -458,6 +469,10 @@ impl AlertRegistry {
     /// ownership before control passes. This prevents a typo'd or unowned
     /// address from permanently locking upgrade, pause, and every limit setter.
     ///
+    /// The proposal expires [`ADMIN_TRANSFER_EXPIRY_LEDGERS`] ledgers after it is
+    /// made; [`Self::accept_admin_transfer`] then fails with
+    /// [`ContractError::AdminTransferExpired`].
+    ///
     /// Calling this again while a proposal is already pending overwrites the
     /// previous proposal with the new `new_admin`. To withdraw a proposal
     /// entirely, call [`Self::cancel_admin_transfer`].
@@ -482,9 +497,15 @@ impl AlertRegistry {
         Self::assert_admin(&env, &admin)?;
         Self::assert_not_paused(&env)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::PendingAdminTransfer, &new_admin);
+        let expires_at_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(ADMIN_TRANSFER_EXPIRY_LEDGERS);
+        env.storage().instance().set(
+            &DataKey::PendingAdminTransfer,
+            &(new_admin.clone(), expires_at_ledger),
+        );
+        Self::extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("propose")),
@@ -513,14 +534,16 @@ impl AlertRegistry {
     /// Returns [`ContractError::Paused`] while the contract is paused.
     /// Returns [`ContractError::NoPendingTransfer`] if no transfer is pending or
     /// the pending proposal names a different address than `new_admin`.
+    /// Returns [`ContractError::AdminTransferExpired`] if the proposal is past its expiry ledger.
     ///
     /// # Events
-    /// Emits `(Symbol("admin"), Symbol("transfer"))` with data `(new_admin: Address)`.
+    /// Emits `(Symbol("admin"), Symbol("transfer"))` with data
+    /// `(old_admin: Address, new_admin: Address)`, the same shape as `transfer_admin`.
     pub fn accept_admin_transfer(env: Env, new_admin: Address) -> Result<(), ContractError> {
         new_admin.require_auth();
         Self::assert_not_paused(&env)?;
 
-        let pending: Address = env
+        let (pending, expires_at_ledger): (Address, u32) = env
             .storage()
             .instance()
             .get(&DataKey::PendingAdminTransfer)
@@ -529,6 +552,15 @@ impl AlertRegistry {
         if pending != new_admin {
             return Err(ContractError::NoPendingTransfer);
         }
+        if env.ledger().sequence() > expires_at_ledger {
+            return Err(ContractError::AdminTransferExpired);
+        }
+
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&instance_key::ADMIN)
+            .ok_or(ContractError::NotInitialized)?;
 
         env.storage()
             .instance()
@@ -536,10 +568,11 @@ impl AlertRegistry {
         env.storage()
             .instance()
             .remove(&DataKey::PendingAdminTransfer);
+        Self::extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("transfer")),
-            new_admin,
+            (old_admin, new_admin),
         );
 
         Ok(())
@@ -560,7 +593,7 @@ impl AlertRegistry {
     /// Returns [`ContractError::NoPendingTransfer`] if no transfer is currently pending.
     ///
     /// # Events
-    /// Emits `(Symbol("admin"), Symbol("cancel"))` with data `(admin: Address)`.
+    /// Emits `(Symbol("admin"), Symbol("cancel"))` with data `(admin: Address,)`.
     pub fn cancel_admin_transfer(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
@@ -576,10 +609,11 @@ impl AlertRegistry {
         env.storage()
             .instance()
             .remove(&DataKey::PendingAdminTransfer);
+        Self::extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("cancel")),
-            admin,
+            (admin,),
         );
 
         Ok(())
@@ -640,6 +674,19 @@ impl AlertRegistry {
             .ok_or(ContractError::NotInitialized)
     }
 
+    /// Return the address of the pending admin transfer, if one is in flight.
+    ///
+    /// Returns `None` when no transfer is pending or the pending proposal has
+    /// expired (it can no longer be accepted).
+    #[must_use]
+    pub fn get_pending_admin_transfer(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get::<DataKey, (Address, u32)>(&DataKey::PendingAdminTransfer)
+            .filter(|(_, expires_at_ledger)| env.ledger().sequence() <= *expires_at_ledger)
+            .map(|(pending, _)| pending)
+    }
+
     /// Return the complete administrative configuration in one read.
     ///
     /// This is intended for dashboards and monitoring clients that would
@@ -655,6 +702,7 @@ impl AlertRegistry {
             per_contract_alert_limit: Self::get_per_contract_alert_limit(env.clone()),
             global_alert_limit: Self::get_global_alert_limit(env.clone()),
             watcher_registry: Self::get_watcher_registry(env.clone()),
+            pending_admin: Self::get_pending_admin_transfer(env),
             guardian: Self::get_guardian(env),
         })
     }
@@ -4878,7 +4926,9 @@ mod tests {
         );
 
         let (_, _, data) = transfer_event.unwrap();
-        let emitted_new_admin: Address = FromVal::from_val(&env, &data);
+        let (emitted_old_admin, emitted_new_admin): (Address, Address) =
+            FromVal::from_val(&env, &data);
+        assert_eq!(emitted_old_admin, admin);
         assert_eq!(emitted_new_admin, new_admin);
     }
 

@@ -1639,6 +1639,127 @@ fn test_regression_instance_keys_match_legacy_symbols() {
     assert!(client.is_paused());
 }
 
+fn last_admin_event(env: &Env, name: Symbol) -> soroban_sdk::Val {
+    let events = env.events().all();
+    let (_, _, data) = events
+        .iter()
+        .rev()
+        .find(|(_, topics, _)| {
+            topics.len() == 2
+                && Symbol::from_val(env, &topics.get(0).unwrap()) == symbol_short!("admin")
+                && Symbol::from_val(env, &topics.get(1).unwrap()) == name
+        })
+        .expect("admin event must be emitted");
+    data
+}
+
+/// Regression test for #367: `accept_admin_transfer` emits `admin.transfer`
+/// as `(old_admin, new_admin)`, the same shape as `transfer_admin`, and
+/// `cancel_admin_transfer` emits a tuple `(admin,)`.
+#[test]
+fn test_regression_admin_transfer_event_payload_shapes() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.propose_admin_transfer(&admin, &new_admin);
+    client.cancel_admin_transfer(&admin);
+    let (cancelled_by,): (Address,) =
+        FromVal::from_val(&env, &last_admin_event(&env, symbol_short!("cancel")));
+    assert_eq!(cancelled_by, admin);
+
+    client.propose_admin_transfer(&admin, &new_admin);
+    client.accept_admin_transfer(&new_admin);
+    let (old, new): (Address, Address) =
+        FromVal::from_val(&env, &last_admin_event(&env, symbol_short!("transfer")));
+    assert_eq!((old, new), (admin.clone(), new_admin.clone()));
+
+    let third = Address::generate(&env);
+    client.transfer_admin(&new_admin, &third);
+    let (old, new): (Address, Address) =
+        FromVal::from_val(&env, &last_admin_event(&env, symbol_short!("transfer")));
+    assert_eq!((old, new), (new_admin, third));
+}
+
+/// Regression test for #368: the constructor and the admin-transfer paths
+/// extend the instance TTL, so a fresh registry starts on the documented
+/// 31-day lifetime rather than the network default.
+#[test]
+fn test_regression_constructor_and_admin_transfer_extend_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (admin.clone(),));
+    let client = AlertRegistryClient::new(&env, &contract_id);
+    assert_eq!(instance_ttl(&env, &client), crate::INSTANCE_BUMP_AMOUNT);
+
+    let new_admin = Address::generate(&env);
+    for step in 0..3 {
+        advance_ledgers(&env, crate::INSTANCE_BUMP_AMOUNT - crate::INSTANCE_BUMP_THRESHOLD + 1);
+        match step {
+            0 => client.propose_admin_transfer(&admin, &new_admin),
+            1 => client.cancel_admin_transfer(&admin),
+            _ => {
+                client.propose_admin_transfer(&admin, &new_admin);
+                advance_ledgers(&env, crate::INSTANCE_BUMP_AMOUNT - crate::INSTANCE_BUMP_THRESHOLD + 1);
+                client.accept_admin_transfer(&new_admin);
+            }
+        }
+        assert_eq!(instance_ttl(&env, &client), crate::INSTANCE_BUMP_AMOUNT);
+    }
+}
+
+/// Regression test for #369: the pending admin transfer is readable through
+/// `get_pending_admin_transfer` and `get_configuration().pending_admin`.
+#[test]
+fn test_regression_pending_admin_transfer_is_exposed() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert_eq!(client.get_pending_admin_transfer(), None);
+    assert_eq!(client.get_configuration().pending_admin, None);
+
+    client.propose_admin_transfer(&admin, &new_admin);
+    assert_eq!(client.get_pending_admin_transfer(), Some(new_admin.clone()));
+    assert_eq!(client.get_configuration().pending_admin, Some(new_admin.clone()));
+
+    client.accept_admin_transfer(&new_admin);
+    assert_eq!(client.get_pending_admin_transfer(), None);
+    assert_eq!(client.get_configuration().pending_admin, None);
+}
+
+/// Regression test for #370: an admin transfer proposal cannot be accepted
+/// after `ADMIN_TRANSFER_EXPIRY_LEDGERS`, and is no longer reported as pending.
+#[test]
+fn test_regression_admin_transfer_proposal_expires() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    client.initialize(&admin);
+    client.propose_admin_transfer(&admin, &new_admin);
+
+    // Still acceptable on the last valid ledger.
+    advance_ledgers(&env, crate::ADMIN_TRANSFER_EXPIRY_LEDGERS);
+    assert_eq!(client.get_pending_admin_transfer(), Some(new_admin.clone()));
+
+    advance_ledgers(&env, 1);
+    assert_eq!(client.get_pending_admin_transfer(), None);
+    assert_eq!(
+        client
+            .try_accept_admin_transfer(&new_admin)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::AdminTransferExpired
+    );
+    assert_eq!(client.get_admin(), admin);
+
+    // The expired proposal can be replaced by a fresh one.
+    client.propose_admin_transfer(&admin, &new_admin);
+    client.accept_admin_transfer(&new_admin);
+    assert_eq!(client.get_admin(), new_admin);
 /// Regression test for #366: `accept_admin_transfer` must be blocked while
 /// paused so a pending admin cannot complete a takeover during an incident,
 /// while `cancel_admin_transfer` stays available to revoke the proposal.

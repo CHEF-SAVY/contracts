@@ -314,7 +314,9 @@ Emitted when the admin role is first initialised.
 
 ### `admin.transfer`
 
-Emitted when the admin role is transferred to a new address.
+Emitted when the admin role is transferred to a new address, by either
+`transfer_admin` or `accept_admin_transfer`. Both paths use the same payload
+shape.
 
 | Field | Value |
 |---|---|
@@ -322,7 +324,7 @@ Emitted when the admin role is transferred to a new address.
 | Topic 1 | `Symbol("transfer")` |
 | Data | `(old_admin: Address, new_admin: Address)` |
 
-**Status:** ✅ implemented (`transfer_admin`)
+**Status:** ✅ implemented (`transfer_admin`, `accept_admin_transfer`)
 
 ---
 
@@ -398,7 +400,7 @@ The current admin is unchanged.
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("cancel")` |
-| Data | `(admin: Address)` |
+| Data | `(admin: Address,)` (a one-element tuple) |
 
 **Status:** ✅ implemented (`cancel_admin_transfer`)
 

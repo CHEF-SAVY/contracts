@@ -220,12 +220,21 @@ Returns the current admin address.
 
 Returns the complete administrative configuration in one call: `admin`,
 `paused`, the per-owner, per-contract, and global alert limits, and the
-optional `watcher_registry` address. This is the preferred read for dashboards
-that display registry configuration.
+optional `watcher_registry` address, and the optional `pending_admin` address
+of an unexpired pending admin transfer. This is the preferred read for
+dashboards that display registry configuration.
 
 **Returns:** `Result<Address, ContractError>`
 
 **Errors:** `NotInitialized` if `initialize` has not been called.
+
+---
+
+### `get_pending_admin_transfer`
+
+Returns `Option<Address>`: the address named by an unexpired pending admin
+transfer proposal, or `None` if no transfer is pending or the proposal has
+expired (see `ADMIN_TRANSFER_EXPIRY_LEDGERS`). Read-only; no auth required.
 
 ---
 
@@ -861,6 +870,7 @@ This includes admin moderation (`deactivate_alert_by_admin`, `unlock_alert_by_ad
 | `AlertSuspended` | 21 | `update_alert` tried to reactivate an alert suspended by `deactivate_alert_by_admin` |
 | `EmptyLabel` | 22 | `label` is empty |
 | `NoopWebhookRotation` | 23 | `propose_webhook` called with a hash that is already live or already pending |
+| `AdminTransferExpired` | 24 | `accept_admin_transfer` called after the proposal's `ADMIN_TRANSFER_EXPIRY_LEDGERS` (120,960 ledgers) have elapsed |
 
 ---
 
