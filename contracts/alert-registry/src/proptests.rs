@@ -908,4 +908,45 @@ proptest! {
         // This is ensured by the contract maintaining consistency
         assert!(active_count_expected <= 1000);
     }
+
+    #[test]
+    fn proptest_contract_live_count_equals_contract_index_length(
+        total in 1u32..8,
+        remove_mask in prop::collection::vec(any::<bool>(), 8),
+    ) {
+        let (env, _admin, client) = create_env_and_client();
+        let owner = Address::generate(&env);
+        let target = Address::generate(&env);
+        let mut ids = Vec::new();
+        for _ in 0..total {
+            ids.push(client.register_alert(
+                &owner,
+                &target,
+                &make_str(&env, "test"),
+                &make_hash64(&env, 'x'),
+                &valid_rules(&env, 1),
+            ));
+        }
+        for (id, remove) in ids.iter().zip(remove_mask.iter()) {
+            if *remove {
+                client.remove_alert(&owner, id);
+            }
+        }
+
+        let (count, index_len): (u32, u32) = env.as_contract(&client.address, || {
+            let count = env
+                .storage()
+                .persistent()
+                .get(&crate::DataKey::ContractLiveCount(target.clone()))
+                .unwrap_or(0u32);
+            let index: SorobanVec<u64> = env
+                .storage()
+                .persistent()
+                .get(&crate::DataKey::ContractIndex(target.clone()))
+                .unwrap_or(SorobanVec::new(&env));
+            (count, index.len())
+        });
+        // ContractLiveCount == count of live IDs in ContractIndex
+        prop_assert_eq!(count, index_len);
+    }
 }

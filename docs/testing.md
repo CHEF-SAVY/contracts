@@ -108,6 +108,8 @@ cargo +nightly fuzz run validate_rule -- -max_total_time=30
 
 The fuzz target subjects `AlertRegistry::validate_rule` and `AlertRegistry::validate_rules` to random byte streams, arbitrary UTF-8 strings, length boundaries, format-string-like patterns (`%s`, `%x`, `%n`), and invalid prefixes, verifying invariant enforcement and absence of panics. See [Fuzz Testing Findings](fuzzing-findings.md) for full execution results and coverage data.
 
+The nightly [Fuzz targets workflow](../.github/workflows/fuzz.yml) builds both fuzz targets and runs each for 60 seconds. If a fuzz run fails, its crash artifacts are uploaded for investigation.
+
 ## Summary
 
 | Test type | Use `mock_all_auths()`? | What it verifies |
@@ -241,6 +243,8 @@ The `exclude_re` patterns exclude inline test modules and regression test blocks
 | `watcher-registry` | 44 | 35 | 9 | 0 | **100%** |
 | `alert-registry` | 102 | 87 | 15 | 0 | **100%** |
 
+The recorded baseline is **0 surviving mutants** across both packages (146 total mutants). The weekly [Mutation testing workflow](../.github/workflows/mutation-testing.yml) runs this check and uploads `mutants.out/` as an artifact so future survivor counts can be compared with this baseline.
+
 ### High-Value Mutants Identified & Killed
 
 During the mutation testing audit, dedicated killer unit tests were added to guarantee no subtle logic gaps survive:
@@ -249,5 +253,3 @@ During the mutation testing audit, dedicated killer unit tests were added to gua
 - **Target Contract Index Relocation**: Verifies that updating a target contract removes the alert from the old contract's index and appends it to the new contract's index.
 - **Timestamp Filter Precision**: Verifies exact inclusive boundary behavior on `get_alerts_modified_since`.
 - **Pagination Offsets**: Verifies empty return when offset exceeds total elements.
-
-

@@ -100,6 +100,7 @@ jobs:
             --watcher-id "${{ steps.deploy.outputs.watcher_id }}" \
             --alert-hash "${{ steps.deploy.outputs.alert_hash }}" \
             --watcher-hash "${{ steps.deploy.outputs.watcher_hash }}" \
+            --cli-version "v28.0.0" \
             --tag "${{ github.event.inputs.release_tag }}" \
             --notes "Production mainnet release"
 

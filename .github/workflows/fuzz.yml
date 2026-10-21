@@ -1,0 +1,55 @@
+name: Fuzz targets
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Build and fuzz all targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry
+        uses: actions/cache@d4323d4df104b026a6aa633fdb11d772115f6ec1 # v4.2.2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/alert-registry/fuzz/target
+          key: ${{ runner.os }}-cargo-fuzz-nightly-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-fuzz-nightly-
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Build all fuzz targets
+        working-directory: contracts/alert-registry
+        run: |
+          cargo +nightly fuzz build validate_rule
+          cargo +nightly fuzz build register_alert
+
+      - name: Fuzz validate_rule
+        working-directory: contracts/alert-registry
+        run: cargo +nightly fuzz run validate_rule -- -max_total_time=60
+
+      - name: Fuzz register_alert
+        working-directory: contracts/alert-registry
+        run: cargo +nightly fuzz run register_alert -- -max_total_time=60
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ github.run_id }}
+          path: contracts/alert-registry/fuzz/artifacts/
+          if-no-files-found: warn

@@ -145,3 +145,30 @@ fn test_regression_remove_last_admin_lockout() {
     );
     assert_eq!(client.get_admins().len(), 1);
 }
+
+/// Regression test for #370: an admin transfer proposal cannot be accepted
+/// after `ADMIN_TRANSFER_EXPIRY_LEDGERS`.
+#[test]
+fn test_regression_admin_transfer_proposal_expires() {
+    use soroban_sdk::testutils::Ledger as _;
+
+    let (env, admin, client) = setup();
+    let new_admin = Address::generate(&env);
+    client.propose_admin_transfer(&admin, &new_admin);
+
+    // One ledger past the expiry ledger.
+    env.ledger()
+        .with_mut(|li| li.sequence_number += ADMIN_TRANSFER_EXPIRY_LEDGERS + 1);
+    assert_eq!(
+        client
+            .try_accept_admin_transfer(&new_admin)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::AdminTransferExpired
+    );
+
+    // A fresh proposal replaces the expired one and can be accepted.
+    client.propose_admin_transfer(&admin, &new_admin);
+    client.accept_admin_transfer(&new_admin);
+    assert!(client.is_admin(&new_admin));
+}
