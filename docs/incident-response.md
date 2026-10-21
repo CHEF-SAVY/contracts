@@ -164,6 +164,9 @@ stellar contract invoke \
   --target_admin <COMPROMISED_ADMIN_ADDRESS>
 ```
 
+### Action 2.1b: AlertRegistry Pause Policy for Pending Admin Transfers
+Pausing the AlertRegistry (`pause`) blocks `propose_admin_transfer` **and** `accept_admin_transfer`, so an attacker-controlled pending admin cannot complete a takeover while the contract is paused. `cancel_admin_transfer` is deliberately allowed while paused, so the current admin can revoke a pending proposal during the incident. `transfer_admin` also clears any pending proposal, so a stale proposal can never be accepted after the admin changes.
+
 ### Action 2.2: AlertRegistry (or Sole Admin WatcherRegistry) Rotation
 If the compromised key is the sole admin, rotate immediately to a clean cold storage address or multisig contract:
 

@@ -435,6 +435,11 @@ impl AlertRegistry {
         env.storage()
             .instance()
             .set(&instance_key::ADMIN, &new_admin);
+        // A proposal made by the previous admin must not survive the handover,
+        // or its target could still `accept_admin_transfer` and take the role.
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminTransfer);
         Self::extend_instance_ttl(&env);
 
         // Admin handover is security-relevant: emit it so off-chain watchers
@@ -498,7 +503,14 @@ impl AlertRegistry {
     /// # Auth
     /// Requires a valid Stellar auth signature from `new_admin`.
     ///
+    /// # Pause policy
+    /// Blocked while the contract is paused, like [`Self::propose_admin_transfer`],
+    /// so pausing during a suspected key compromise stops a pending admin from
+    /// completing a takeover. [`Self::cancel_admin_transfer`] stays allowed
+    /// while paused so the current admin can revoke the proposal.
+    ///
     /// # Errors
+    /// Returns [`ContractError::Paused`] while the contract is paused.
     /// Returns [`ContractError::NoPendingTransfer`] if no transfer is pending or
     /// the pending proposal names a different address than `new_admin`.
     ///
@@ -506,6 +518,7 @@ impl AlertRegistry {
     /// Emits `(Symbol("admin"), Symbol("transfer"))` with data `(new_admin: Address)`.
     pub fn accept_admin_transfer(env: Env, new_admin: Address) -> Result<(), ContractError> {
         new_admin.require_auth();
+        Self::assert_not_paused(&env)?;
 
         let pending: Address = env
             .storage()
@@ -654,6 +667,9 @@ impl AlertRegistry {
     /// Every state-mutating entry point returns [`ContractError::Paused`] while
     /// paused, with these deliberate exemptions:
     /// - `pause` / `unpause`, so the circuit-breaker can be operated;
+    /// - `cancel_admin_transfer`, so the admin can revoke a pending admin
+    ///   proposal during an incident (`accept_admin_transfer` is blocked while
+    ///   paused, so a pending admin cannot complete a takeover);
     /// - `initialize`, the one-time admin bootstrap;
     /// - `upgrade`, so a hot-fix can be deployed during an incident.
     ///
@@ -2153,15 +2169,18 @@ impl AlertRegistry {
     ///
     /// Iterates the owner's index and sets `active = false` on live alerts.
     /// Expired or already-removed entries are silently skipped. Each call
-    /// processes at most [`MAX_DEACTIVATIONS_PER_CALL`] index entries; call
-    /// again until it returns `0` to finish a large owner index.
+    /// scans [`MAX_DEACTIVATIONS_PER_CALL`] index entries at a time and keeps
+    /// scanning further windows until it deactivates at least one alert or
+    /// reaches the end of the index; call again until it returns `0` to finish
+    /// a large owner index.
     ///
     /// # Auth
     /// Requires a valid Stellar auth signature from `caller`.
     ///
     /// # Returns
-    /// The number of alerts deactivated in this pass (`0` if this pass found
-    /// no active alerts).
+    /// The number of alerts deactivated in this pass. `0` means the scan reached
+    /// the end of the owner index without finding an active alert, so it is
+    /// safe to stop calling.
     ///
     /// # Errors
     /// Returns [`ContractError::Paused`] while the contract is paused, like
@@ -2176,48 +2195,57 @@ impl AlertRegistry {
         caller.require_auth();
         Self::assert_not_paused(&env)?;
         let ids = Self::owner_index(&env, &caller);
-        let start = env
+        let mut start = env
             .storage()
             .persistent()
             .get::<DataKey, u32>(&DataKey::DeactivationCursor(caller.clone()))
             .unwrap_or(0)
             .min(ids.len());
-        let end = (start + MAX_DEACTIVATIONS_PER_CALL).min(ids.len());
         let mut count: u32 = 0;
-        for i in start..end {
-            let id = ids.get(i).unwrap();
-            if let Some(mut cfg) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
-            {
-                if cfg.active {
-                    cfg.active = false;
-                    cfg.updated_at = env.ledger().timestamp();
-                    Self::persist_alert(&env, id, &cfg);
-                    cfg.updated_ledger = env.ledger().sequence();
-                    env.storage().persistent().set(&DataKey::Alert(id), &cfg);
-                    env.storage().persistent().extend_ttl(
-                        &DataKey::Alert(id),
-                        DEFAULT_TTL,
-                        DEFAULT_TTL,
-                    );
-                    env.storage()
-                        .persistent()
-                        .set(&DataKey::AlertActive(id), &false);
-                    env.storage().persistent().extend_ttl(
-                        &DataKey::AlertActive(id),
-                        DEFAULT_TTL,
-                        DEFAULT_TTL,
-                    );
-                    env.storage().persistent().extend_ttl(
-                        &DataKey::ContractIndex(cfg.target_contract.clone()),
-                        DEFAULT_TTL,
-                        DEFAULT_TTL,
-                    );
-                    count += 1;
+        let mut end;
+        // Keep scanning windows until something is deactivated or the index is
+        // exhausted, so `0` is only returned once the whole scan is finished.
+        loop {
+            end = (start + MAX_DEACTIVATIONS_PER_CALL).min(ids.len());
+            for i in start..end {
+                let id = ids.get(i).unwrap();
+                if let Some(mut cfg) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
+                {
+                    if cfg.active {
+                        cfg.active = false;
+                        cfg.updated_at = env.ledger().timestamp();
+                        Self::persist_alert(&env, id, &cfg);
+                        cfg.updated_ledger = env.ledger().sequence();
+                        env.storage().persistent().set(&DataKey::Alert(id), &cfg);
+                        env.storage().persistent().extend_ttl(
+                            &DataKey::Alert(id),
+                            DEFAULT_TTL,
+                            DEFAULT_TTL,
+                        );
+                        env.storage()
+                            .persistent()
+                            .set(&DataKey::AlertActive(id), &false);
+                        env.storage().persistent().extend_ttl(
+                            &DataKey::AlertActive(id),
+                            DEFAULT_TTL,
+                            DEFAULT_TTL,
+                        );
+                        env.storage().persistent().extend_ttl(
+                            &DataKey::ContractIndex(cfg.target_contract.clone()),
+                            DEFAULT_TTL,
+                            DEFAULT_TTL,
+                        );
+                        count += 1;
+                    }
                 }
             }
+            if count > 0 || end >= ids.len() {
+                break;
+            }
+            start = end;
         }
         let cursor_key = DataKey::DeactivationCursor(caller.clone());
         if end < ids.len() {
@@ -2990,9 +3018,12 @@ impl AlertRegistry {
         let ids = Self::contract_index(env, target);
         let count = Self::contract_live_count(env, target);
         let mut updated: Vec<u64> = vec![env];
+        let mut removed = false;
         for i in 0..ids.len() {
             let v = ids.get(i).unwrap();
-            if v != id {
+            if v == id {
+                removed = true;
+            } else {
                 updated.push_back(v);
             }
         }
@@ -3004,7 +3035,9 @@ impl AlertRegistry {
             DEFAULT_TTL,
             DEFAULT_TTL,
         );
-        Self::set_contract_live_count(env, target, count.saturating_sub(1));
+        if removed {
+            Self::set_contract_live_count(env, target, count.saturating_sub(1));
+        }
     }
 
     /// Resolve a list of alert IDs to their stored [`AlertConfig`] values.
