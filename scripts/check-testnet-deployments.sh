@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# scripts/check-testnet-deployments.sh — Verify that testnet addresses in DEPLOYMENTS.md are still live
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$SCRIPT_DIR/check_testnet_deployments.py" "$@"
 RPC_URL="${RPC_URL:-https://soroban-testnet.stellar.org}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOYMENTS_FILE="${1:-${SCRIPT_DIR}/../DEPLOYMENTS.md}"

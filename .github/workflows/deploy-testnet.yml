@@ -66,6 +66,7 @@ jobs:
         id: deploy
         env:
           STELLAR_IDENTITY: deployer
+        run: bash scripts/deploy.sh
         run: |
           OUTPUT=$(bash scripts/deploy.sh 2>&1)
           echo "$OUTPUT"
