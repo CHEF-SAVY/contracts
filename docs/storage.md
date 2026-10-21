@@ -35,7 +35,7 @@ Every `DataKey` variant and `instance_key` constant the contract reads or writes
 | `instance_key::GLIMIT` (`symbol_short!("GLIMIT")`) | Instance | `u32` | Optional global ceiling on currently live alerts (`set_global_alert_limit`) |
 | `instance_key::LIVE` (`symbol_short!("LIVE")`) | Instance | `u64` | Number of currently live alert records used by the global ceiling |
 | `instance_key::WATCHREG` (`symbol_short!("WATCHREG")`) | Instance | `Address` | Optional `WatcherRegistry` contract address; when set, read queries are gated to registered watchers |
-| `DataKey::PendingAdminTransfer` | Instance | `Address` | Address proposed by `propose_admin_transfer`, awaiting `accept_admin_transfer`. Written by `propose_admin_transfer` (a new proposal overwrites any earlier one); removed by `accept_admin_transfer` and `cancel_admin_transfer`. Shares the instance entry's TTL |
+| `DataKey::PendingAdminTransfer` | Instance | `(Address, u32)` (new admin, expiry ledger) | Address proposed by `propose_admin_transfer`, awaiting `accept_admin_transfer`. Written by `propose_admin_transfer` (a new proposal overwrites any earlier one); removed by `accept_admin_transfer` and `cancel_admin_transfer`. Shares the instance entry's TTL |
 
 Instance keys are the constants in `alert_registry::instance_key`. Each is the same bare `symbol_short!` the contract has always used, so the storage encoding is unchanged across the switch (#211); the constants only make a mistyped key a compile error. They are intentionally not `DataKey` variants, whose encoding (`[Symbol("Name"), …]`) would differ from the stored keys. The `DataKey::NextId` variant is still declared in the enum but is never read or written; the ID counter lives only under `instance_key::NEXT_ID`. Do not use `DataKey::NextId` for new code.
 
@@ -88,7 +88,7 @@ Source: `contracts/watcher-registry/src/lib.rs`
 |---|---|---|---|
 | `DataKey::Admins` | Instance | `Vec<Address>` | The current admin set (multi-admin; any one admin can perform privileged operations) |
 | `DataKey::Watchers` | Instance | `Vec<Address>` | List of authorized watcher node addresses |
-| `DataKey::PendingAdminTransfer` | Instance | `Address` | Address proposed by `propose_admin_transfer`, awaiting `accept_admin_transfer`; removed on accept or `cancel_admin_transfer` |
+| `DataKey::PendingAdminTransfer` | Instance | `(Address, u32)` (new admin, expiry ledger) | Address proposed by `propose_admin_transfer`, awaiting `accept_admin_transfer`; removed on accept or `cancel_admin_transfer` |
 | `DataKey::TimelockDelay` | Instance | `u32` | Timelock delay in ledgers for sensitive admin actions; absent or `0` means disabled |
 | `DataKey::PendingAction` | Instance | `PendingAction` | The single queued timelocked `AdminAction` with its proposer and `ready_at` ledger; removed on execute or `cancel_admin_action` |
 | `DataKey::Paused` | Instance | `bool` | Circuit-breaker flag set by `pause` / `unpause`; absent means not paused |

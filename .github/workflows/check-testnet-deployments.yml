@@ -12,6 +12,7 @@ on:
 # Issue #284 — Top-level least-privilege permissions
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: check-testnet-deployments
@@ -32,6 +33,34 @@ jobs:
           python-version: '3.11'
 
       - name: Run Testnet Deployment Liveness Check
+        id: liveness
         run: |
           chmod +x scripts/check-testnet-deployments.sh
           ./scripts/check-testnet-deployments.sh DEPLOYMENTS.md
+
+      - name: Report liveness result
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIVENESS_OUTCOME: ${{ steps.liveness.outcome }}
+        run: |
+          title="Testnet deployment liveness check failed"
+          issue_number=$(gh issue list \
+            --state open \
+            --search "in:title \"$title\"" \
+            --limit 100 \
+            --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
+
+          if [[ "$LIVENESS_OUTCOME" == "failure" ]]; then
+            if [[ -z "$issue_number" ]]; then
+              gh issue create \
+                --title "$title" \
+                --body "The scheduled testnet liveness check failed. Review the [workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) logs, then follow the [testnet reset recovery guide](docs/deployment-guide.md)."
+            else
+              echo "Existing liveness issue: #$issue_number"
+            fi
+          elif [[ -n "$issue_number" ]]; then
+            gh issue close "$issue_number" \
+              --comment "The testnet liveness check passed in [workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+          fi

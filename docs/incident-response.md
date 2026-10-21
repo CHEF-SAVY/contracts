@@ -32,6 +32,81 @@ Understanding what an attacker can and cannot do with a compromised admin key de
 
 ---
 
+## 1a. Guardian Role (AlertRegistry)
+
+`AlertRegistry` supports an optional **guardian** role for on-call operators and monitoring automation that need to trip the circuit-breaker quickly without holding a full admin key.
+
+### What the guardian can do
+* Call `pause` — freeze all state-mutating operations immediately.
+
+### What the guardian cannot do
+* Call `unpause` — only the admin can lift the pause.
+* Call any other admin function (`transfer_admin`, `set_per_owner_alert_limit`, `remove_alert_by_admin`, `upgrade`, etc.).
+
+This keeps the guardian's blast radius strictly limited: a compromised or misbehaving guardian can freeze the registry, but cannot drain it, retarget alerts, or seize admin control.
+
+### Configuring the guardian
+
+```bash
+# Set the guardian (admin only)
+stellar contract invoke \
+  --id <ALERT_REGISTRY_CONTRACT_ID> \
+  --source <ADMIN_IDENTITY> \
+  --network testnet \
+  -- set_guardian \
+  --admin <ADMIN_ADDRESS> \
+  --guardian <GUARDIAN_ADDRESS>
+
+# Read the current guardian (unauthenticated)
+stellar contract invoke \
+  --id <ALERT_REGISTRY_CONTRACT_ID> \
+  --network testnet \
+  -- get_guardian
+
+# Remove the guardian (admin only)
+stellar contract invoke \
+  --id <ALERT_REGISTRY_CONTRACT_ID> \
+  --source <ADMIN_IDENTITY> \
+  --network testnet \
+  -- clear_guardian \
+  --admin <ADMIN_ADDRESS>
+```
+
+Both `set_guardian` and `clear_guardian` emit an `("admin", "guardian")` event whose data payload is `(admin: Address, guardian: Option<Address>)` — `Some(guardian)` on set and `None` on clear. Index these events to audit guardian rotations.
+
+### Tripping the circuit-breaker as guardian
+
+```bash
+stellar contract invoke \
+  --id <ALERT_REGISTRY_CONTRACT_ID> \
+  --source <GUARDIAN_IDENTITY> \
+  --network testnet \
+  -- pause \
+  --caller <GUARDIAN_ADDRESS>
+```
+
+After the guardian pauses the contract, **only** the admin can resume it:
+
+```bash
+stellar contract invoke \
+  --id <ALERT_REGISTRY_CONTRACT_ID> \
+  --source <ADMIN_IDENTITY> \
+  --network testnet \
+  -- unpause \
+  --admin <ADMIN_ADDRESS>
+```
+
+### Key management recommendations
+
+| Role | Recommended key storage | Reason |
+|---|---|---|
+| Admin | Hardware security module (HSM) or multisig | Full power: upgrade, limits, admin transfer |
+| Guardian | Hot key or secrets manager (e.g. AWS Secrets Manager) | Pause-only; acceptable to rotate frequently |
+
+Rotate the guardian key regularly (e.g. monthly) or immediately after any suspected compromise. Because the guardian has no power to escalate privileges, a leaked guardian key cannot be used to seize control — `clear_guardian` followed by `set_guardian` with a new key is sufficient containment.
+
+---
+
 ## 2. Phase 1: Detection & Signal Identification
 
 An admin key compromise may be detected through several signals:
@@ -40,6 +115,9 @@ An admin key compromise may be detected through several signals:
    * `AlertRegistry`:
      * `("admin", "transfer")` — emitted whenever `transfer_admin` is executed.
      * `("alert", "remove")` — emitted when `remove_alert_by_admin` deletes an alert.
+     * `("admin", "pause")` — emitted when the contract is paused (data: caller address — admin or guardian).
+     * `("admin", "unpause")` — emitted when the contract is resumed (data: admin address only).
+     * `("admin", "guardian")` — emitted when the guardian is set or cleared (data: `(admin, Option<guardian>)`).
    * `WatcherRegistry`:
      * `("admin", "init")`, `("admin", "add")`, `("admin", "remove")`, `("admin", "transfer")`.
      * `("watcher", "register")`, `("watcher", "remove")`, `("watcher", "replace")`.
@@ -85,6 +163,9 @@ stellar contract invoke \
   --caller <UNCOMPROMISED_ADMIN_ADDRESS> \
   --target_admin <COMPROMISED_ADMIN_ADDRESS>
 ```
+
+### Action 2.1b: AlertRegistry Pause Policy for Pending Admin Transfers
+Pausing the AlertRegistry (`pause`) blocks `propose_admin_transfer` **and** `accept_admin_transfer`, so an attacker-controlled pending admin cannot complete a takeover while the contract is paused. `cancel_admin_transfer` is deliberately allowed while paused, so the current admin can revoke a pending proposal during the incident. `transfer_admin` also clears any pending proposal, so a stale proposal can never be accepted after the admin changes.
 
 ### Action 2.2: AlertRegistry (or Sole Admin WatcherRegistry) Rotation
 If the compromised key is the sole admin, rotate immediately to a clean cold storage address or multisig contract:
@@ -202,5 +283,6 @@ Once administrative control is secured, audit the contracts for malicious modifi
 2. **Key Management Hardening:**
    * Transition admin keys to hardware security modules (HSMs) or Soroban multisig contracts.
    * Establish threshold signer sets (e.g. 2-of-3 or 3-of-5 signers) for `WatcherRegistry`.
+   * Configure a **guardian** on `AlertRegistry` (see [Section 1a](#1a-guardian-role-alertregistry)) so on-call operators can pause without ever touching the admin key — reducing the frequency with which the admin key is used and the blast radius if a hot key is later compromised.
 3. **Runbook Updates:**
    * Document lessons learned and update this runbook and `SECURITY.md` accordingly.
