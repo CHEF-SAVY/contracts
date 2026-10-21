@@ -388,7 +388,6 @@ impl AlertRegistry {
     /// Returns [`ContractError::AlreadyInitialized`] if the contract has already been initialized.
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
-        if env.storage().instance().has(&symbol_short!("ADMIN")) {
         if env.storage().instance().has(&instance_key::ADMIN) {
             return Err(ContractError::AlreadyInitialized);
         }
@@ -5013,6 +5012,19 @@ mod tests {
     // #195 — initialize must require a valid signature from the admin address so
     // that no one can front-run the initialization window after deployment and
     // claim the admin role without owning the corresponding key.
+    #[test]
+    fn test_initialize_after_constructor_returns_already_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(AlertRegistry, (admin.clone(),));
+        let client = AlertRegistryClient::new(&env, &contract_id);
+        assert_eq!(
+            client.try_initialize(&admin).unwrap_err().unwrap(),
+            ContractError::AlreadyInitialized
+        );
+    }
+
     #[test]
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_initialize_requires_auth() {
