@@ -2281,6 +2281,48 @@ fn test_deactivate_alert_by_admin_emits_event() {
     assert!(!env.events().all().is_empty());
 }
 
+#[test]
+fn test_deactivate_alert_by_admin_is_idempotent() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    let id = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Alert"),
+        &hash64(&env),
+        &vec![&env],
+    );
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1_000;
+        li.sequence_number = 10;
+    });
+    client.deactivate_alert_by_admin(&admin, &id);
+    assert!(client.is_alert_suspended(&id));
+    let first = client.get_alert(&owner, &id).unwrap();
+    assert!(!first.active);
+    assert_eq!(first.updated_at, 1_000);
+    assert_eq!(first.updated_ledger, 10);
+    assert_eq!(env.events().all().len(), 1);
+
+    // Re-suspending an already-suspended alert is a no-op without an event.
+    env.ledger().with_mut(|li| {
+        li.timestamp = 2_000;
+        li.sequence_number = 20;
+    });
+    client.deactivate_alert_by_admin(&admin, &id);
+    assert!(client.is_alert_suspended(&id));
+    let second = client.get_alert(&owner, &id).unwrap();
+    assert!(!second.active);
+    assert_eq!(second.updated_at, 1_000);
+    assert_eq!(second.updated_ledger, 10);
+    assert!(env.events().all().is_empty());
+}
+
 // ── Issue #37 — batch_register_alert / batch_remove_alert ───────────────
 
 fn alert_input(env: &Env, owner: &Address, target: &Address, label: &str) -> AlertInput {
