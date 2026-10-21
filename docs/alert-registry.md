@@ -125,7 +125,7 @@ Registers a new alert configuration for a target contract address.
 
 | Error | Code | Cause |
 |---|---|---|
-| `TooManyRules` | 8 | More than 50 rules were supplied |
+| `TooManyRules` | 8 | More than `MAX_RULES_PER_ALERT` (`VALID_RULE_DESCRIPTORS.len()`, currently 2) rules were supplied |
 | `InvalidRuleDescriptor` | 9 | A rule is not `rule:transfer` or `rule:mint` |
 | `DuplicateRule` | 15 | The same rule descriptor appears more than once |
 
@@ -881,7 +881,7 @@ This includes admin moderation (`deactivate_alert_by_admin`, `unlock_alert_by_ad
 | `NotAWatcher` | 5 | Watcher-gating is enabled and `querier` is not a registered watcher |
 | `InvalidWebhookHash` | 6 | `register_alert`, `update_webhook` or `propose_webhook` called with the all-zero webhook hash (never the SHA-256 of a URL). Wrong lengths cannot occur: hashes are `BytesN<32>`. |
 | `LabelTooLong` | 7 | `label` exceeds 128 bytes |
-| `TooManyRules` | 8 | `rules` exceeds the 50-rule maximum |
+| `TooManyRules` | 8 | `rules` exceeds `MAX_RULES_PER_ALERT` (`VALID_RULE_DESCRIPTORS.len()`, currently 2) |
 | `InvalidRuleDescriptor` | 9 | A rule is not a recognised descriptor (`rule:transfer`, `rule:mint`) |
 | `OwnerAlertLimitExceeded` | 10 | Owner is at the configured per-owner active alert limit |
 | `DuplicateAlertId` | 11 | Internal invariant violation — an ID was already present in an index |
